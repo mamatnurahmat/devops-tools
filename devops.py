@@ -461,6 +461,118 @@ def cmd_kube_config(args):
         sys.exit(1)
 
 
+def cmd_ns(args):
+    """Switch kubectl context based on namespace format {project}-{env}."""
+    import subprocess
+    import re
+    import shutil
+    
+    ns_input = args.namespace
+    
+    # Parse format: {project}-{env}
+    # Example: develop-saas -> env: develop, project: saas
+    parts = ns_input.split('-', 1)
+    if len(parts) != 2:
+        print(f"Error: Invalid namespace format. Expected format: {{project}}-{{env}}", file=sys.stderr)
+        print(f"Example: develop-saas (where 'develop' is env and 'saas' is project)", file=sys.stderr)
+        sys.exit(1)
+    
+    env, project = parts
+    print(f"?? Looking for context matching env: {env}, project: {project}")
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
+        print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
+        sys.exit(1)
+    
+    # Get list of contexts
+    try:
+        result = subprocess.run(
+            ['kubectl', 'config', 'get-contexts', '-o', 'name'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            print(f"Error getting contexts: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        
+        contexts = [ctx.strip() for ctx in result.stdout.strip().split('\n') if ctx.strip()]
+        
+        if not contexts:
+            print("Error: No contexts found in kubectl config", file=sys.stderr)
+            sys.exit(1)
+        
+        # Search for context matching env using regex
+        # Pattern: look for env in context name (case-insensitive)
+        # Examples: rke2-develop-qoin matches "develop"
+        pattern = re.compile(rf'\b{re.escape(env)}\b', re.IGNORECASE)
+        matched_contexts = [ctx for ctx in contexts if pattern.search(ctx)]
+        
+        if not matched_contexts:
+            print(f"?? No context found matching env '{env}'")
+            print(f"\nAvailable contexts:")
+            for ctx in contexts:
+                print(f"  - {ctx}")
+            print(f"\nSuggestion: Check if env '{env}' exists in any context name")
+            sys.exit(1)
+        
+        # If multiple matches, prefer exact match or first match
+        # Priority: exact match > contains match
+        exact_match = None
+        for ctx in matched_contexts:
+            if env.lower() in ctx.lower():
+                exact_match = ctx
+                break
+        
+        selected_context = exact_match if exact_match else matched_contexts[0]
+        
+        if len(matched_contexts) > 1:
+            print(f"?? Multiple contexts found matching env '{env}':")
+            for ctx in matched_contexts:
+                marker = " (selected)" if ctx == selected_context else ""
+                print(f"  - {ctx}{marker}")
+        
+        # Switch to selected context
+        print(f"\n?? Switching to context: {selected_context}")
+        result = subprocess.run(
+            ['kubectl', 'config', 'use-context', selected_context],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            print(f"Error switching context: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"? Switched to context: {selected_context}")
+        
+        # Verify current context
+        verify_result = subprocess.run(
+            ['kubectl', 'config', 'current-context'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if verify_result.returncode == 0:
+            current = verify_result.stdout.strip()
+            if current == selected_context:
+                print(f"? Current context verified: {current}")
+            else:
+                print(f"?? Warning: Expected context {selected_context}, but current is {current}")
+        
+    except subprocess.TimeoutExpired:
+        print("Error: kubectl command timed out", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_check_update(args):
     """Check if there are updates available."""
     try:
@@ -772,6 +884,14 @@ def main():
     namespace_parser.add_argument('--cluster', help='Filter by cluster ID')
     namespace_parser.add_argument('--json', action='store_true', help='Output as JSON')
     namespace_parser.set_defaults(func=cmd_list_namespaces)
+    
+    # Namespace switch command
+    ns_parser = subparsers.add_parser('ns', 
+                                      help='Switch kubectl context based on namespace format {project}-{env}',
+                                      description='Switch kubectl context by matching environment name. '
+                                                'Format: {project}-{env} (e.g., develop-saas)')
+    ns_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    ns_parser.set_defaults(func=cmd_ns)
     
     # Kubeconfig command
     kubeconfig_parser = subparsers.add_parser('kube-config', help='Get kubeconfig from project and save to ~/.kube/config')
