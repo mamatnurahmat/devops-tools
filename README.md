@@ -196,6 +196,154 @@ devops kube-config <project-id> --replace
 devops kube-config <project-id> --set-context
 ```
 
+## Kubernetes Resource Management
+
+DevOps Tools menyediakan berbagai command untuk mengelola Kubernetes resources dengan dukungan automatic context switching.
+
+### Switch Context by Namespace
+
+Switch kubectl context berdasarkan namespace format `{project}-{env}`:
+
+```bash
+devops ns <namespace>
+```
+
+Command ini akan:
+- Parse namespace format `{project}-{env}` (contoh: `develop-saas`)
+- Mencari context yang sesuai dengan environment menggunakan regex matching
+- Otomatis switch ke context yang cocok (contoh: `develop-saas` → `rke2-develop-qoin`)
+
+Contoh:
+
+```bash
+# Switch ke context untuk develop environment
+devops ns develop-saas
+
+# Switch ke context untuk production environment
+devops ns production-saas
+```
+
+### Set Image for Deployment
+
+Set image untuk deployment dengan automatic context switching:
+
+```bash
+devops set-image <namespace> <deployment> <image>
+```
+
+Command ini akan:
+- Otomatis switch context berdasarkan namespace
+- Mendeteksi container name dari deployment (mendukung multiple containers)
+- Update image untuk container yang sesuai
+
+Contoh:
+
+```bash
+# Set image untuk deployment
+devops set-image develop-devops devops-nginx-proxy nginx:1.25
+
+# Set image dengan registry URL
+devops set-image develop-devops my-app registry.example.com/app:v1.0.0
+```
+
+### Get Image Information
+
+Get informasi image yang digunakan deployment:
+
+```bash
+devops get-image <namespace> <deployment>
+```
+
+Output human-readable:
+
+```bash
+devops get-image develop-devops devops-nginx-proxy
+```
+
+Output JSON:
+
+```bash
+devops get-image develop-devops devops-nginx-proxy --json
+```
+
+### Get Resource Information (JSON Format)
+
+Semua command berikut mengembalikan output dalam format JSON (silent mode) dan otomatis switch context:
+
+#### Get Deployment
+
+```bash
+devops get-deploy <namespace> <deployment>
+```
+
+Contoh:
+
+```bash
+# Get deployment info
+devops get-deploy develop-devops devops-nginx-proxy
+
+# Pipe ke jq untuk filtering
+devops get-deploy develop-devops devops-nginx-proxy | jq '.spec.template.spec.containers[0].image'
+```
+
+#### Get Service
+
+```bash
+devops get-svc <namespace> <service>
+```
+
+Contoh:
+
+```bash
+# Get service info
+devops get-svc develop-devops devops-nginx-proxy
+
+# Get service port
+devops get-svc develop-devops devops-nginx-proxy | jq '.spec.ports[0].port'
+```
+
+#### Get ConfigMap
+
+```bash
+devops get-cm <namespace> <configmap>
+```
+
+Contoh:
+
+```bash
+# Get configmap info
+devops get-cm develop-devops nginx-proxy-config
+
+# Get specific data value
+devops get-cm develop-devops nginx-proxy-config | jq '.data.nginx.conf'
+```
+
+#### Get Secret (with Base64 Decoding)
+
+```bash
+devops get-secret <namespace> <secret>
+```
+
+Command ini akan:
+- Otomatis decode semua values di field `data` dari base64
+- Menambahkan annotation `_devops.decoded: true` untuk menandai bahwa data sudah di-decode
+- Output langsung readable tanpa perlu decode manual
+
+Contoh:
+
+```bash
+# Get secret dengan decoded values
+devops get-secret develop-devops s3www-secret
+
+# Get specific secret value (sudah decoded)
+devops get-secret develop-devops s3www-secret | jq -r '.data.MINIO_ACCESS_KEY'
+
+# Get secret dengan key yang memiliki karakter khusus (misalnya .env)
+devops get-secret develop-saas file-config-saas-be-admin-manager | jq -r '.data[".env"]'
+```
+
+**Catatan:** Semua command `get-*` menggunakan silent mode (hanya output JSON), sehingga cocok untuk scripting dan piping ke tools lain seperti `jq`.
+
 ## Update Management
 
 DevOps Tools menggunakan sistem version tracking berbasis commit hash untuk mengelola update. Setiap instalasi akan menyimpan commit hash yang terinstall ke file `~/.devops/version.json`.
@@ -325,4 +473,33 @@ DevOps Tools menggunakan `uv` sebagai package manager. Keuntungan menggunakan `u
 - **Auto-install**: Installer script akan otomatis menginstall uv jika belum tersedia
 
 Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersedia di sistem Anda.
+
+## Quick Reference
+
+### Rancher Management
+- `devops login` - Login ke Rancher API
+- `devops token-check` - Cek validitas token
+- `devops cluster` - List clusters
+- `devops project` - List projects
+- `devops namespace` - List namespaces
+- `devops kube-config <project-id>` - Get kubeconfig dari project
+
+### Kubernetes Resource Management
+- `devops ns <namespace>` - Switch kubectl context berdasarkan namespace
+- `devops set-image <ns> <deploy> <image>` - Set image untuk deployment
+- `devops get-image <ns> <deploy>` - Get image info dari deployment
+- `devops get-deploy <ns> <deploy>` - Get deployment resource (JSON)
+- `devops get-svc <ns> <svc>` - Get service resource (JSON)
+- `devops get-cm <ns> <cm>` - Get configmap resource (JSON)
+- `devops get-secret <ns> <secret>` - Get secret resource dengan base64 decoded (JSON)
+
+### Update Management
+- `devops check-update` - Cek update tersedia
+- `devops update` - Update ke versi terbaru
+- `devops update <commit>` - Update ke commit tertentu
+- `devops version` - Tampilkan versi terinstall
+
+### Configuration
+- `devops config` - Lihat/mengatur konfigurasi
+- `devops config --url <url> --token <token>` - Set konfigurasi manual
 

@@ -573,6 +573,569 @@ def cmd_ns(args):
         sys.exit(1)
 
 
+def _switch_context_by_namespace(ns_input, silent=False):
+    """Helper function to switch kubectl context based on namespace format {project}-{env}.
+    Returns the matched context name or None if failed.
+    If silent=True, suppresses all output messages.
+    """
+    import subprocess
+    import re
+    import shutil
+    
+    # Parse format: {project}-{env}
+    # Example: develop-saas -> env: develop, project: saas
+    parts = ns_input.split('-', 1)
+    if len(parts) != 2:
+        if not silent:
+            print(f"Error: Invalid namespace format. Expected format: {{project}}-{{env}}", file=sys.stderr)
+            print(f"Example: develop-saas (where 'develop' is env and 'saas' is project)", file=sys.stderr)
+        return None
+    
+    env, project = parts
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        if not silent:
+            print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
+            print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
+        return None
+    
+    # Get list of contexts
+    try:
+        result = subprocess.run(
+            ['kubectl', 'config', 'get-contexts', '-o', 'name'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            if not silent:
+                print(f"Error getting contexts: {result.stderr}", file=sys.stderr)
+            return None
+        
+        contexts = [ctx.strip() for ctx in result.stdout.strip().split('\n') if ctx.strip()]
+        
+        if not contexts:
+            if not silent:
+                print("Error: No contexts found in kubectl config", file=sys.stderr)
+            return None
+        
+        # Search for context matching env using regex
+        # Pattern: look for env in context name (case-insensitive)
+        # Examples: rke2-develop-qoin matches "develop"
+        pattern = re.compile(rf'\b{re.escape(env)}\b', re.IGNORECASE)
+        matched_contexts = [ctx for ctx in contexts if pattern.search(ctx)]
+        
+        if not matched_contexts:
+            if not silent:
+                print(f"?? No context found matching env '{env}'")
+                print(f"\nAvailable contexts:")
+                for ctx in contexts:
+                    print(f"  - {ctx}")
+                print(f"\nSuggestion: Check if env '{env}' exists in any context name")
+            return None
+        
+        # If multiple matches, prefer exact match or first match
+        exact_match = None
+        for ctx in matched_contexts:
+            if env.lower() in ctx.lower():
+                exact_match = ctx
+                break
+        
+        selected_context = exact_match if exact_match else matched_contexts[0]
+        
+        # Switch to selected context
+        result = subprocess.run(
+            ['kubectl', 'config', 'use-context', selected_context],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            if not silent:
+                print(f"Error switching context: {result.stderr}", file=sys.stderr)
+            return None
+        
+        return selected_context
+        
+    except subprocess.TimeoutExpired:
+        if not silent:
+            print("Error: kubectl command timed out", file=sys.stderr)
+        return None
+    except Exception as e:
+        if not silent:
+            print(f"Error: {e}", file=sys.stderr)
+        return None
+
+
+def cmd_ns(args):
+    """Switch kubectl context based on namespace format {project}-{env}."""
+    ns_input = args.namespace
+    
+    print(f"?? Looking for context matching namespace: {ns_input}")
+    selected_context = _switch_context_by_namespace(ns_input)
+    
+    if selected_context:
+        print(f"? Switched to context: {selected_context}")
+        
+        # Verify current context
+        import subprocess
+        try:
+            verify_result = subprocess.run(
+                ['kubectl', 'config', 'current-context'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if verify_result.returncode == 0:
+                current = verify_result.stdout.strip()
+                if current == selected_context:
+                    print(f"? Current context verified: {current}")
+                else:
+                    print(f"?? Warning: Expected context {selected_context}, but current is {current}")
+        except Exception:
+            pass
+    else:
+        sys.exit(1)
+
+
+def cmd_get_cm(args):
+    """Get configmap resource information in JSON format."""
+    import subprocess
+    import shutil
+    import json
+    
+    ns = args.namespace
+    configmap = args.configmap
+    
+    # First, ensure context is correct (silently)
+    selected_context = _switch_context_by_namespace(ns, silent=True)
+    
+    if not selected_context:
+        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Get configmap information in JSON format
+    try:
+        get_result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'get', 'configmap', configmap, '-o', 'json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if get_result.returncode != 0:
+            error_output = {
+                "error": f"ConfigMap '{configmap}' not found in namespace '{ns}'",
+                "stderr": get_result.stderr.strip() if get_result.stderr else None
+            }
+            print(json.dumps(error_output, indent=2))
+            sys.exit(1)
+        
+        # Parse and pretty print JSON
+        configmap_data = json.loads(get_result.stdout)
+        print(json.dumps(configmap_data, indent=2))
+        
+    except json.JSONDecodeError:
+        error_output = {"error": "Failed to parse configmap JSON"}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        error_output = {"error": str(e)}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_get_secret(args):
+    """Get secret resource information in JSON format with base64 decoded values."""
+    import subprocess
+    import shutil
+    import json
+    import base64
+    
+    ns = args.namespace
+    secret = args.secret
+    
+    # First, ensure context is correct (silently)
+    selected_context = _switch_context_by_namespace(ns, silent=True)
+    
+    if not selected_context:
+        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Get secret information in JSON format
+    try:
+        get_result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'get', 'secret', secret, '-o', 'json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if get_result.returncode != 0:
+            error_output = {
+                "error": f"Secret '{secret}' not found in namespace '{ns}'",
+                "stderr": get_result.stderr.strip() if get_result.stderr else None
+            }
+            print(json.dumps(error_output, indent=2))
+            sys.exit(1)
+        
+        # Parse JSON
+        secret_data = json.loads(get_result.stdout)
+        
+        # Decode base64 values in data field
+        if 'data' in secret_data and secret_data['data']:
+            decoded_data = {}
+            for key, value in secret_data['data'].items():
+                try:
+                    decoded_value = base64.b64decode(value).decode('utf-8')
+                    decoded_data[key] = decoded_value
+                except Exception:
+                    # If decoding fails, keep original value
+                    decoded_data[key] = value
+            
+            # Replace data with decoded values
+            secret_data['data'] = decoded_data
+            # Add note that data is decoded
+            if 'annotations' not in secret_data['metadata']:
+                secret_data['metadata']['annotations'] = {}
+            secret_data['metadata']['annotations']['_devops.decoded'] = 'true'
+        
+        # Pretty print JSON
+        print(json.dumps(secret_data, indent=2))
+        
+    except json.JSONDecodeError:
+        error_output = {"error": "Failed to parse secret JSON"}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        error_output = {"error": str(e)}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_get_svc(args):
+    """Get service resource information in JSON format."""
+    import subprocess
+    import shutil
+    import json
+    
+    ns = args.namespace
+    service = args.service
+    
+    # First, ensure context is correct (silently)
+    selected_context = _switch_context_by_namespace(ns, silent=True)
+    
+    if not selected_context:
+        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Get service information in JSON format
+    try:
+        get_result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'get', 'service', service, '-o', 'json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if get_result.returncode != 0:
+            error_output = {
+                "error": f"Service '{service}' not found in namespace '{ns}'",
+                "stderr": get_result.stderr.strip() if get_result.stderr else None
+            }
+            print(json.dumps(error_output, indent=2))
+            sys.exit(1)
+        
+        # Parse and pretty print JSON
+        service_data = json.loads(get_result.stdout)
+        print(json.dumps(service_data, indent=2))
+        
+    except json.JSONDecodeError:
+        error_output = {"error": "Failed to parse service JSON"}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        error_output = {"error": str(e)}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_get_deploy(args):
+    """Get deployment resource information in JSON format."""
+    import subprocess
+    import shutil
+    import json
+    
+    ns = args.namespace
+    deployment = args.deployment
+    
+    # First, ensure context is correct (silently)
+    selected_context = _switch_context_by_namespace(ns, silent=True)
+    
+    if not selected_context:
+        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+    
+    # Get deployment information in JSON format
+    try:
+        get_result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if get_result.returncode != 0:
+            error_output = {
+                "error": f"Deployment '{deployment}' not found in namespace '{ns}'",
+                "stderr": get_result.stderr.strip() if get_result.stderr else None
+            }
+            print(json.dumps(error_output, indent=2))
+            sys.exit(1)
+        
+        # Parse and pretty print JSON
+        deployment_data = json.loads(get_result.stdout)
+        print(json.dumps(deployment_data, indent=2))
+        
+    except json.JSONDecodeError:
+        error_output = {"error": "Failed to parse deployment JSON"}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        error_output = {"error": str(e)}
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_get_image(args):
+    """Get current image information for deployment in namespace."""
+    import subprocess
+    import shutil
+    import json
+    
+    ns = args.namespace
+    deployment = args.deployment
+    
+    print(f"?? Getting image information for deployment '{deployment}' in namespace '{ns}'")
+    
+    # First, ensure context is correct
+    print(f"\n?? Ensuring correct context for namespace '{ns}'...")
+    selected_context = _switch_context_by_namespace(ns)
+    
+    if not selected_context:
+        print("Error: Failed to switch to correct context", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"? Context verified: {selected_context}")
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
+        print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
+        sys.exit(1)
+    
+    # Get deployment information
+    print(f"\n?? Getting deployment information...")
+    try:
+        get_result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if get_result.returncode != 0:
+            if get_result.stderr:
+                print(f"Error getting deployment: {get_result.stderr}", file=sys.stderr)
+            print(f"Error: Deployment '{deployment}' not found in namespace '{ns}'", file=sys.stderr)
+            sys.exit(1)
+        
+        # Parse deployment JSON to get container images
+        deployment_data = json.loads(get_result.stdout)
+        containers = deployment_data.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
+        
+        if not containers:
+            print("Error: No containers found in deployment", file=sys.stderr)
+            sys.exit(1)
+        
+        # Display image information
+        if args.json:
+            # JSON output
+            images_info = []
+            for container in containers:
+                images_info.append({
+                    'container': container.get('name', 'unknown'),
+                    'image': container.get('image', 'unknown')
+                })
+            output = {
+                'namespace': ns,
+                'deployment': deployment,
+                'context': selected_context,
+                'containers': images_info
+            }
+            print(json.dumps(output, indent=2))
+        else:
+            # Human-readable output
+            print(f"\n? Deployment: {deployment}")
+            print(f"   Namespace: {ns}")
+            print(f"   Context: {selected_context}")
+            print(f"\n📦 Container Images:")
+            print("=" * 60)
+            
+            for container in containers:
+                container_name = container.get('name', 'unknown')
+                image = container.get('image', 'unknown')
+                print(f"  Container: {container_name}")
+                print(f"  Image:     {image}")
+                print()
+            
+            if len(containers) == 1:
+                print(f"✅ Current image: {containers[0].get('image', 'unknown')}")
+        
+    except json.JSONDecodeError:
+        print("Error: Failed to parse deployment JSON", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error getting deployment info: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_set_image(args):
+    """Set image for deployment in namespace."""
+    import subprocess
+    import shutil
+    import json
+    
+    ns = args.namespace
+    deployment = args.deployment
+    image = args.image
+    
+    print(f"?? Setting image for deployment '{deployment}' in namespace '{ns}'")
+    print(f"   Image: {image}")
+    
+    # First, ensure context is correct
+    print(f"\n?? Ensuring correct context for namespace '{ns}'...")
+    selected_context = _switch_context_by_namespace(ns)
+    
+    if not selected_context:
+        print("Error: Failed to switch to correct context", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"? Context verified: {selected_context}")
+    
+    # Check if kubectl is available
+    if not shutil.which('kubectl'):
+        print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
+        print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
+        sys.exit(1)
+    
+    # Get container name(s) from deployment
+    print(f"\n?? Getting container information from deployment '{deployment}'...")
+    try:
+        get_result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if get_result.returncode != 0:
+            if get_result.stderr:
+                print(f"Error getting deployment: {get_result.stderr}", file=sys.stderr)
+            print(f"Error: Deployment '{deployment}' not found in namespace '{ns}'", file=sys.stderr)
+            sys.exit(1)
+        
+        # Parse deployment JSON to get container names
+        deployment_data = json.loads(get_result.stdout)
+        containers = deployment_data.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
+        
+        if not containers:
+            print("Error: No containers found in deployment", file=sys.stderr)
+            sys.exit(1)
+        
+        container_names = [c.get('name') for c in containers if c.get('name')]
+        
+        if not container_names:
+            print("Error: Could not determine container names from deployment", file=sys.stderr)
+            sys.exit(1)
+        
+        # Use first container if multiple containers exist
+        container_name = container_names[0]
+        
+        if len(container_names) > 1:
+            print(f"?? Multiple containers found: {', '.join(container_names)}")
+            print(f"   Using first container: {container_name}")
+        else:
+            print(f"? Container name: {container_name}")
+        
+    except json.JSONDecodeError:
+        print("Error: Failed to parse deployment JSON", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error getting deployment info: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Execute kubectl set image command
+    # kubectl -n=${ns} set image deployment/${deploy} ${container_name}=${image}
+    print(f"\n?? Executing: kubectl -n={ns} set image deployment/{deployment} {container_name}={image}")
+    
+    try:
+        # Run kubectl command and capture output for better error handling
+        result = subprocess.run(
+            ['kubectl', f'-n={ns}', 'set', 'image', f'deployment/{deployment}', f'{container_name}={image}'],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        # Print stdout if available
+        if result.stdout:
+            print(result.stdout)
+        
+        if result.returncode != 0:
+            if result.stderr:
+                print(f"Error: {result.stderr}", file=sys.stderr)
+            print(f"Error setting image (exit code: {result.returncode})", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"\n? Image updated successfully!")
+        print(f"   Namespace: {ns}")
+        print(f"   Deployment: {deployment}")
+        print(f"   Container: {container_name}")
+        print(f"   Image: {image}")
+        
+    except subprocess.TimeoutExpired:
+        print("Error: kubectl command timed out", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_check_update(args):
     """Check if there are updates available."""
     try:
@@ -892,6 +1455,56 @@ def main():
                                                 'Format: {project}-{env} (e.g., develop-saas)')
     ns_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
     ns_parser.set_defaults(func=cmd_ns)
+    
+    # Set image command
+    set_image_parser = subparsers.add_parser('set-image',
+                                             help='Set image for deployment in namespace',
+                                             description='Set image for deployment. Automatically switches to correct context based on namespace.')
+    set_image_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    set_image_parser.add_argument('deployment', help='Deployment name')
+    set_image_parser.add_argument('image', help='Image URL/tag (e.g., nginx:1.20 or registry.example.com/app:v1.0)')
+    set_image_parser.set_defaults(func=cmd_set_image)
+    
+    # Get image command
+    get_image_parser = subparsers.add_parser('get-image',
+                                             help='Get current image information for deployment in namespace',
+                                             description='Get current image information for deployment. Automatically switches to correct context based on namespace.')
+    get_image_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    get_image_parser.add_argument('deployment', help='Deployment name')
+    get_image_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    get_image_parser.set_defaults(func=cmd_get_image)
+    
+    # Get deployment command
+    get_deploy_parser = subparsers.add_parser('get-deploy',
+                                              help='Get deployment resource information in JSON format',
+                                              description='Get deployment resource information in JSON format. Automatically switches to correct context based on namespace. Output is silent (JSON only).')
+    get_deploy_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    get_deploy_parser.add_argument('deployment', help='Deployment name')
+    get_deploy_parser.set_defaults(func=cmd_get_deploy)
+    
+    # Get service command
+    get_svc_parser = subparsers.add_parser('get-svc',
+                                           help='Get service resource information in JSON format',
+                                           description='Get service resource information in JSON format. Automatically switches to correct context based on namespace. Output is silent (JSON only).')
+    get_svc_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    get_svc_parser.add_argument('service', help='Service name')
+    get_svc_parser.set_defaults(func=cmd_get_svc)
+    
+    # Get configmap command
+    get_cm_parser = subparsers.add_parser('get-cm',
+                                          help='Get configmap resource information in JSON format',
+                                          description='Get configmap resource information in JSON format. Automatically switches to correct context based on namespace. Output is silent (JSON only).')
+    get_cm_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    get_cm_parser.add_argument('configmap', help='ConfigMap name')
+    get_cm_parser.set_defaults(func=cmd_get_cm)
+    
+    # Get secret command
+    get_secret_parser = subparsers.add_parser('get-secret',
+                                             help='Get secret resource information in JSON format with base64 decoded values',
+                                             description='Get secret resource information in JSON format with base64 decoded values. Automatically switches to correct context based on namespace. Output is silent (JSON only).')
+    get_secret_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
+    get_secret_parser.add_argument('secret', help='Secret name')
+    get_secret_parser.set_defaults(func=cmd_get_secret)
     
     # Kubeconfig command
     kubeconfig_parser = subparsers.add_parser('kube-config', help='Get kubeconfig from project and save to ~/.kube/config')
