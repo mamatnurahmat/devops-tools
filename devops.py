@@ -527,19 +527,36 @@ def cmd_update(args):
     elif args.commit_hash:
         commit_hash = args.commit_hash
     else:
-        # Check for updates and update to latest if available
-        update_info = check_for_updates()
-        if update_info.get('error'):
-            print(f"Error: {update_info['error']}", file=sys.stderr)
+        # If no commit hash provided, check current version and update to latest
+        print("?? Checking current version...")
+        current_version = get_version()
+        current_hash = current_version.get('commit_hash', 'unknown')
+        
+        # Get latest commit hash
+        latest_hash = get_latest_commit_hash()
+        if not latest_hash:
+            print("Error: Tidak dapat mengambil latest commit hash dari repository", file=sys.stderr)
             sys.exit(1)
         
-        if not update_info['has_update']:
+        # Compare with current version
+        if current_hash != 'unknown' and current_hash == latest_hash:
             print("? Sudah menggunakan versi terbaru!")
-            print(f"   Current commit: {update_info['current_hash']}")
+            print(f"   Current version: {current_hash[:8]}...")
+            print(f"   Latest version:  {latest_hash[:8]}...")
+            print(f"   Installed at:    {current_version.get('installed_at', 'unknown')}")
+            print("\nTidak ada update yang diperlukan.")
             return
         
-        commit_hash = update_info['latest_hash']
-        print(f"?? Update tersedia! Akan update ke commit: {commit_hash[:8]}...")
+        # Update to latest
+        if current_hash != 'unknown':
+            print(f"\n?? Update tersedia!")
+            print(f"   Current version: {current_hash[:8]}...")
+            print(f"   Latest version:  {latest_hash[:8]}...")
+            print(f"   Will update to latest version...\n")
+        else:
+            print(f"\n?? Will update to latest version: {latest_hash[:8]}...\n")
+        
+        commit_hash = latest_hash
     
     # Check if git is available
     if not shutil.which('git'):
@@ -709,9 +726,14 @@ def main():
     check_update_parser.set_defaults(func=cmd_check_update)
     
     # Update command
-    update_parser = subparsers.add_parser('update', help='Update DevOps Tools from GitHub repository')
-    update_parser.add_argument('commit_hash', nargs='?', help='Git commit hash to update to (optional, will check for updates if not provided)')
-    update_parser.add_argument('--latest', action='store_true', help='Update to latest commit from repository')
+    update_parser = subparsers.add_parser('update', 
+                                          help='Update DevOps Tools from GitHub repository',
+                                          description='Update DevOps Tools to latest version or specific commit. '
+                                                    'If no commit hash is provided, will update to latest commit from main branch.')
+    update_parser.add_argument('commit_hash', nargs='?', 
+                              help='Git commit hash to update to (optional, defaults to latest if not provided)')
+    update_parser.add_argument('--latest', action='store_true', 
+                              help='Update to latest commit from repository (same as running without arguments)')
     update_parser.set_defaults(func=cmd_update)
     
     # Version command

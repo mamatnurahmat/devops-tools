@@ -61,20 +61,19 @@ echo "? Directory ${INSTALL_DIR} siap"
 
 # Create wrapper script menggunakan uv run
 WRAPPER_SCRIPT="${INSTALL_DIR}/${BIN_NAME}"
-cat > "${WRAPPER_SCRIPT}" << EOF
+cat > "${WRAPPER_SCRIPT}" << 'EOF'
 #!/usr/bin/env bash
 # DevOps Tools CLI Wrapper
 # Menggunakan uv untuk menjalankan CLI dengan environment yang terisolasi
 
-SCRIPT_DIR="${SCRIPT_DIR}"
-cd "\${SCRIPT_DIR}"
-
 # Check if uv is available
 if command -v uv &> /dev/null; then
-    uv run python -m devops "\$@"
+    # Use uv run to execute devops module directly
+    # Package is already installed via 'uv pip install -e .', so we can run it directly
+    uv run python -m devops "$@"
 else
     # Fallback to direct python execution
-    python3 -m devops "\$@"
+    python3 -m devops "$@"
 fi
 EOF
 
