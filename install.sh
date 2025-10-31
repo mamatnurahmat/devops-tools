@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DevOps Tools Installer
 # Instalasi DevOps CLI tools untuk mengelola Rancher resources
+# Menggunakan uv package manager untuk instalasi yang lebih cepat dan reliable
 
 set -e
 
@@ -21,45 +22,80 @@ fi
 PYTHON_VERSION=$(python3 --version | awk '{print $2}')
 echo "? Python3 ditemukan: ${PYTHON_VERSION}"
 
-# Check pip
-if ! command -v pip3 &> /dev/null; then
-    echo "? pip3 tidak ditemukan. Silakan install pip3 terlebih dahulu."
-    exit 1
+# Check uv - install if not available
+if ! command -v uv &> /dev/null; then
+    echo "? uv tidak ditemukan. Menginstall uv..."
+    
+    # Install uv using official installer
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    
+    # Add uv to PATH if not already there
+    if [[ ":$PATH:" != *":${HOME}/.cargo/bin:"* ]]; then
+        export PATH="${HOME}/.cargo/bin:${PATH}"
+    fi
+    
+    # Verify uv installation
+    if ! command -v uv &> /dev/null; then
+        echo "? Error: Gagal menginstall uv. Silakan install manual dari https://github.com/astral-sh/uv"
+        exit 1
+    fi
+    
+    echo "? uv berhasil diinstall"
+else
+    echo "? uv ditemukan: $(uv --version)"
 fi
 
-echo "? pip3 ditemukan"
-
-# Install dependencies
+# Install dependencies menggunakan uv
 echo ""
-echo "?? Menginstall dependencies..."
+echo "?? Menginstall dependencies dengan uv..."
 cd "${SCRIPT_DIR}"
-pip3 install -q -r requirements.txt
+
+# Install project dependencies (user-level, tidak perlu --system)
+uv pip install -q -e .
+
 echo "? Dependencies terinstall"
 
 # Create install directory
 mkdir -p "${INSTALL_DIR}"
 echo "? Directory ${INSTALL_DIR} siap"
 
-# Create wrapper script
+# Create wrapper script menggunakan uv run
 WRAPPER_SCRIPT="${INSTALL_DIR}/${BIN_NAME}"
 cat > "${WRAPPER_SCRIPT}" << EOF
-#!/usr/bin/env python3
-import sys
-import os
+#!/usr/bin/env bash
+# DevOps Tools CLI Wrapper
+# Menggunakan uv untuk menjalankan CLI dengan environment yang terisolasi
 
-# Add script directory to path
-script_dir = "${SCRIPT_DIR}"
-sys.path.insert(0, script_dir)
+SCRIPT_DIR="${SCRIPT_DIR}"
+cd "\${SCRIPT_DIR}"
 
-# Import and run main
-from devops import main
-
-if __name__ == '__main__':
-    main()
+# Check if uv is available
+if command -v uv &> /dev/null; then
+    uv run python -m devops "\$@"
+else
+    # Fallback to direct python execution
+    python3 -m devops "\$@"
+fi
 EOF
 
 chmod +x "${WRAPPER_SCRIPT}"
 echo "? Wrapper script dibuat: ${WRAPPER_SCRIPT}"
+
+# Save current commit hash to version file
+if command -v git &> /dev/null; then
+    cd "${SCRIPT_DIR}"
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        CURRENT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        python3 << EOF
+import sys
+import os
+sys.path.insert(0, "${SCRIPT_DIR}")
+from version import save_version
+save_version("${CURRENT_COMMIT}")
+EOF
+        echo "? Version tracking diupdate: ${CURRENT_COMMIT}"
+    fi
+fi
 
 # Check if ~/.local/bin is in PATH
 if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then

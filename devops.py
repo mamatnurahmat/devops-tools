@@ -5,6 +5,7 @@ import getpass
 import sys
 from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
+from version import get_version, save_version, check_for_updates, get_latest_commit_hash
 
 
 def print_table(headers, rows):
@@ -460,6 +461,53 @@ def cmd_kube_config(args):
         sys.exit(1)
 
 
+def cmd_check_update(args):
+    """Check if there are updates available."""
+    try:
+        update_info = check_for_updates()
+        current_version = get_version()
+        
+        if args.json:
+            import json
+            output = {
+                'has_update': update_info['has_update'],
+                'current_hash': update_info['current_hash'],
+                'latest_hash': update_info['latest_hash'],
+                'installed_at': current_version.get('installed_at', 'unknown'),
+                'error': update_info.get('error')
+            }
+            print(json.dumps(output, indent=2))
+            return
+        
+        print("?? Checking for updates...")
+        print("=" * 50)
+        print(f"Current version: {update_info['current_hash']}")
+        print(f"Installed at: {current_version.get('installed_at', 'unknown')}")
+        
+        if update_info.get('error'):
+            print(f"\n?? Error: {update_info['error']}")
+            return
+        
+        if update_info['latest_hash']:
+            print(f"Latest version: {update_info['latest_hash']}")
+        
+        if update_info['has_update']:
+            print("\n? Update tersedia!")
+            print(f"   Current: {update_info['current_hash'][:8]}...")
+            print(f"   Latest:  {update_info['latest_hash'][:8]}...")
+            print("\nGunakan command berikut untuk update:")
+            print(f"   devops update {update_info['latest_hash']}")
+            print("\nAtau update otomatis ke latest:")
+            print("   devops update --latest")
+        else:
+            print("\n? Sudah menggunakan versi terbaru!")
+            print(f"   Commit: {update_info['current_hash']}")
+        
+    except Exception as e:
+        print(f"Error checking for updates: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_update(args):
     """Update DevOps Tools from GitHub repository."""
     import subprocess
@@ -469,7 +517,29 @@ def cmd_update(args):
     
     repo_url = "https://github.com/mamatnurahmat/devops-tools"
     branch = "main"
-    commit_hash = args.commit_hash
+    
+    # Determine commit hash
+    if args.latest:
+        commit_hash = get_latest_commit_hash()
+        if not commit_hash:
+            print("Error: Tidak dapat mengambil latest commit hash dari repository", file=sys.stderr)
+            sys.exit(1)
+    elif args.commit_hash:
+        commit_hash = args.commit_hash
+    else:
+        # Check for updates and update to latest if available
+        update_info = check_for_updates()
+        if update_info.get('error'):
+            print(f"Error: {update_info['error']}", file=sys.stderr)
+            sys.exit(1)
+        
+        if not update_info['has_update']:
+            print("? Sudah menggunakan versi terbaru!")
+            print(f"   Current commit: {update_info['current_hash']}")
+            return
+        
+        commit_hash = update_info['latest_hash']
+        print(f"?? Update tersedia! Akan update ke commit: {commit_hash[:8]}...")
     
     # Check if git is available
     if not shutil.which('git'):
@@ -477,16 +547,11 @@ def cmd_update(args):
         print("Please install git first: https://git-scm.com/downloads", file=sys.stderr)
         sys.exit(1)
     
-    # Use permanent directory for installation (works in any environment)
-    devops_dir = Path.home() / '.devops'
-    install_dir = devops_dir / 'devops-tools'
-    install_dir.mkdir(parents=True, exist_ok=True)
-    
     # Create temporary directory for cloning
     temp_dir = None
     try:
         temp_dir = tempfile.mkdtemp(prefix='devops-update-')
-        print(f"?? Cloning repository from {repo_url}...")
+        print(f"\n?? Cloning repository from {repo_url}...")
         print(f"   Branch: {branch}")
         print(f"   Commit: {commit_hash}")
         
@@ -533,6 +598,9 @@ def cmd_update(args):
             print(f"\nError running installer (exit code: {result.returncode})", file=sys.stderr)
             sys.exit(1)
         
+        # Save version after successful update
+        save_version(commit_hash)
+        
         print("\n" + "=" * 50)
         print("? Update completed successfully!")
         print(f"   Updated to commit: {commit_hash}")
@@ -551,6 +619,28 @@ def cmd_update(args):
                 print(f"\n?? Cleaned up temporary files")
             except Exception:
                 pass
+
+
+def cmd_version(args):
+    """Show installed version information."""
+    try:
+        version_info = get_version()
+        
+        if args.json:
+            import json
+            print(json.dumps(version_info, indent=2))
+            return
+        
+        print("?? DevOps Tools Version Information")
+        print("=" * 50)
+        print(f"Commit Hash: {version_info.get('commit_hash', 'unknown')}")
+        print(f"Installed At: {version_info.get('installed_at', 'unknown')}")
+        print(f"Repository: {version_info.get('repo_url', 'unknown')}")
+        print(f"Branch: {version_info.get('branch', 'unknown')}")
+        
+    except Exception as e:
+        print(f"Error getting version: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_config(args):
@@ -613,10 +703,21 @@ def main():
     token_parser.add_argument('--json', action='store_true', help='Output as JSON')
     token_parser.set_defaults(func=cmd_token_check)
     
+    # Check update command
+    check_update_parser = subparsers.add_parser('check-update', help='Check if there are updates available')
+    check_update_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    check_update_parser.set_defaults(func=cmd_check_update)
+    
     # Update command
     update_parser = subparsers.add_parser('update', help='Update DevOps Tools from GitHub repository')
-    update_parser.add_argument('commit_hash', help='Git commit hash to update to')
+    update_parser.add_argument('commit_hash', nargs='?', help='Git commit hash to update to (optional, will check for updates if not provided)')
+    update_parser.add_argument('--latest', action='store_true', help='Update to latest commit from repository')
     update_parser.set_defaults(func=cmd_update)
+    
+    # Version command
+    version_parser = subparsers.add_parser('version', help='Show installed version information')
+    version_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    version_parser.set_defaults(func=cmd_version)
     
     # Config command
     config_parser = subparsers.add_parser('config', help='Configure Rancher API settings')

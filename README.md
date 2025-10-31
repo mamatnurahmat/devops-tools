@@ -4,16 +4,20 @@ Simple CLI tool untuk mengelola Rancher resources menggunakan Python.
 
 ## Instalasi
 
-### Metode 1: Installer Script (Recommended)
+### Metode Instalasi (Menggunakan uv)
+
+#### Installer Script (Recommended)
 
 ```bash
 ./install.sh
 ```
 
 Script ini akan:
-- Menginstall dependencies
+- Menginstall `uv` package manager jika belum tersedia (otomatis)
+- Menginstall dependencies menggunakan `uv` (lebih cepat dan reliable dibanding pip)
 - Membuat executable `devops` di `~/.local/bin`
 - Menambahkan ke PATH (jika belum ada)
+- Menyimpan commit hash ke file version tracking
 
 Setelah instalasi, jalankan:
 ```bash
@@ -25,18 +29,19 @@ Jika `~/.local/bin` belum ada di PATH, tambahkan ke `~/.bashrc` atau `~/.zshrc`:
 export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
-### Metode 2: Setup.py (Alternative)
+#### Alternatif: Menggunakan uv secara langsung
+
+Jika Anda sudah memiliki `uv` terinstall, Anda bisa menginstall dependencies secara langsung:
 
 ```bash
-pip3 install -e .
+# Install uv jika belum ada
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install project dependencies
+uv pip install -e .
 ```
 
-Atau:
-
-```bash
-pip3 install -r requirements.txt
-python3 devops.py --help
-```
+**Catatan:** Proyek ini menggunakan `uv` sebagai package manager default untuk instalasi yang lebih cepat dan reliable.
 
 ## Konfigurasi
 
@@ -191,9 +196,55 @@ devops kube-config <project-id> --replace
 devops kube-config <project-id> --set-context
 ```
 
-## Update
+## Update Management
 
-Update DevOps Tools dari GitHub repository:
+DevOps Tools menggunakan sistem version tracking berbasis commit hash untuk mengelola update. Setiap instalasi akan menyimpan commit hash yang terinstall ke file `~/.devops/version.json`.
+
+### Check Update
+
+Cek apakah ada update tersedia di repository:
+
+```bash
+devops check-update
+```
+
+Command ini akan:
+- Membandingkan commit hash terinstall dengan commit hash terbaru di repository
+- Menampilkan informasi versi saat ini dan versi terbaru
+- Memberikan instruksi untuk update jika tersedia
+
+Output JSON:
+
+```bash
+devops check-update --json
+```
+
+### Update ke Versi Terbaru
+
+Ada beberapa cara untuk melakukan update:
+
+#### 1. Update Otomatis ke Latest (Recommended)
+
+```bash
+devops update
+```
+
+Command ini akan:
+- Otomatis mengecek apakah ada update tersedia
+- Jika sudah latest, menampilkan pesan bahwa sudah up-to-date
+- Jika ada update, akan otomatis update ke commit terbaru
+
+#### 2. Update ke Latest Commit Secara Eksplisit
+
+```bash
+devops update --latest
+```
+
+Command ini akan:
+- Langsung mengambil latest commit hash dari repository
+- Update ke commit terbaru tanpa mengecek versi saat ini
+
+#### 3. Update ke Commit Tertentu
 
 ```bash
 devops update <commit_hash>
@@ -202,27 +253,76 @@ devops update <commit_hash>
 Command ini akan:
 - Clone repository dari `https://github.com/mamatnurahmat/devops-tools`
 - Checkout ke commit hash yang ditentukan
-- Menjalankan installer script (`install.sh`)
+- Menjalankan installer script (`install.sh`) menggunakan `uv`
 - Update installation ke versi commit tersebut
+- Menyimpan commit hash baru ke file version tracking
 
 Contoh:
 
 ```bash
 # Update ke commit tertentu
-devops update abc123def456
+devops update abc123def4567890123456789012345678901234
 
-# Update ke latest commit (gunakan commit hash terbaru dari GitHub)
-devops update <latest_commit_hash>
+# Update otomatis ke latest
+devops update
+
+# Update ke latest commit secara eksplisit
+devops update --latest
 ```
 
-**Catatan:** Perlu git terinstall di sistem untuk menggunakan fitur update.
+### Version Information
+
+Lihat informasi versi yang terinstall:
+
+```bash
+devops version
+```
+
+Output JSON:
+
+```bash
+devops version --json
+```
+
+Informasi yang ditampilkan:
+- Commit Hash: Hash commit yang terinstall
+- Installed At: Waktu instalasi terakhir
+- Repository: URL repository
+- Branch: Branch yang digunakan (default: main)
+
+### Cara Kerja Update Management
+
+1. **Version Tracking**: Setiap instalasi menyimpan commit hash ke `~/.devops/version.json`
+2. **Update Check**: Command `check-update` menggunakan `git ls-remote` untuk mendapatkan commit hash terbaru tanpa perlu clone repository
+3. **Update Process**: 
+   - Clone repository ke temporary directory
+   - Checkout ke commit yang ditentukan
+   - Jalankan installer script yang akan menggunakan `uv` untuk install dependencies
+   - Update version tracking setelah instalasi berhasil
+   - Cleanup temporary files
+
+**Catatan:** 
+- Perlu git terinstall di sistem untuk menggunakan fitur update
+- Update akan menggunakan `uv` package manager untuk instalasi yang lebih cepat
+- Version tracking berbasis commit hash memastikan update berdasarkan commit yang tepat
 
 ## Struktur File
 
 - `devops.py` - Main CLI entry point
 - `rancher_api.py` - Rancher API client
 - `config.py` - Configuration management
-- `requirements.txt` - Python dependencies
-- `install.sh` - Installer script
-- `setup.py` - Setup script untuk pip install
+- `version.py` - Version tracking dan update management
+- `pyproject.toml` - Project configuration untuk uv package manager
+- `install.sh` - Installer script menggunakan uv
+
+## Package Manager
+
+DevOps Tools menggunakan `uv` sebagai package manager. Keuntungan menggunakan `uv`:
+
+- **Lebih Cepat**: Instalasi dependencies 10-100x lebih cepat dibanding pip
+- **Reliable**: Dependency resolution yang lebih baik
+- **Isolated**: Environment management yang lebih baik
+- **Auto-install**: Installer script akan otomatis menginstall uv jika belum tersedia
+
+Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersedia di sistem Anda.
 
