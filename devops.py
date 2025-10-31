@@ -477,6 +477,11 @@ def cmd_update(args):
         print("Please install git first: https://git-scm.com/downloads", file=sys.stderr)
         sys.exit(1)
     
+    # Use permanent directory for installation (works in any environment)
+    devops_dir = Path.home() / '.devops'
+    install_dir = devops_dir / 'devops-tools'
+    install_dir.mkdir(parents=True, exist_ok=True)
+    
     # Create temporary directory for cloning
     temp_dir = None
     try:
