@@ -170,6 +170,53 @@ Filter by cluster:
 devops namespace --cluster <cluster-id>
 ```
 
+### Get Kubeconfig
+
+Get kubeconfig dari project dan simpan ke `~/.kube/config`:
+
+```bash
+devops kube-config <project-id>
+```
+
+Dengan default, kubeconfig akan di-flatten. Opsi tambahan:
+
+```bash
+# Tanpa flatten
+devops kube-config <project-id> --no-flatten
+
+# Replace existing config (default: merge)
+devops kube-config <project-id> --replace
+
+# Set sebagai current context
+devops kube-config <project-id> --set-context
+```
+
+## Update
+
+Update DevOps Tools dari GitHub repository:
+
+```bash
+devops update <commit_hash>
+```
+
+Command ini akan:
+- Clone repository dari `https://github.com/mamatnurahmat/devops-tools`
+- Checkout ke commit hash yang ditentukan
+- Menjalankan installer script (`install.sh`)
+- Update installation ke versi commit tersebut
+
+Contoh:
+
+```bash
+# Update ke commit tertentu
+devops update abc123def456
+
+# Update ke latest commit (gunakan commit hash terbaru dari GitHub)
+devops update <latest_commit_hash>
+```
+
+**Catatan:** Perlu git terinstall di sistem untuk menggunakan fitur update.
+
 ## Struktur File
 
 - `devops.py` - Main CLI entry point

@@ -130,9 +130,21 @@ class RancherAPI:
         response.raise_for_status()
         return response.json()
     
+    def _request_raw(self, method, endpoint, **kwargs):
+        """Make API request and return raw response."""
+        url = f"{self.url}{endpoint}"
+        kwargs.setdefault('verify', self.verify)
+        response = self.session.request(method, url, **kwargs)
+        response.raise_for_status()
+        return response
+    
     def get(self, endpoint, **kwargs):
         """GET request."""
         return self._request('GET', endpoint, **kwargs)
+    
+    def post(self, endpoint, **kwargs):
+        """POST request."""
+        return self._request('POST', endpoint, **kwargs)
     
     def list_clusters(self):
         """List all clusters."""
@@ -234,6 +246,98 @@ class RancherAPI:
                 pass
         
         return all_namespaces
+    
+    def get_project_info(self, project_id):
+        """Get project information by project ID.
+        
+        Args:
+            project_id: Project ID
+            
+        Returns:
+            dict: Project information
+        """
+        return self.get(f'/v3/projects/{project_id}')
+    
+    def generate_kubeconfig(self, cluster_id, flatten=False):
+        """Generate kubeconfig for a cluster.
+        
+        Args:
+            cluster_id: Cluster ID
+            flatten: Whether to flatten the kubeconfig (default: False)
+            
+        Returns:
+            str: Kubeconfig content
+        """
+        endpoint = f'/v3/clusters/{cluster_id}?action=generateKubeconfig'
+        
+        if flatten:
+            # Try to get flattened kubeconfig
+            # Some Rancher versions support ?flatten=true parameter
+            endpoint = f'/v3/clusters/{cluster_id}?action=generateKubeconfig&flatten=true'
+        
+        try:
+            # POST request to generate kubeconfig
+            response = self._request_raw('POST', endpoint)
+            data = response.json()
+            
+            # Kubeconfig is usually in data.config or data field
+            kubeconfig = data.get('config') or data.get('data', {}).get('config') or data.get('data')
+            
+            if isinstance(kubeconfig, dict):
+                # If it's a dict, try to extract YAML or convert to string
+                import yaml
+                kubeconfig = yaml.dump(kubeconfig, default_flow_style=False)
+            elif not isinstance(kubeconfig, str):
+                # If it's not a string, try to convert
+                kubeconfig = str(kubeconfig)
+            
+            return kubeconfig
+        except Exception as e:
+            # Try alternative endpoint
+            try:
+                endpoint_alt = f'/v3/clusters/{cluster_id}/generateKubeconfig'
+                response = self._request_raw('POST', endpoint_alt)
+                data = response.json()
+                kubeconfig = data.get('config') or data.get('data', {}).get('config') or data.get('data')
+                
+                if isinstance(kubeconfig, dict):
+                    import yaml
+                    kubeconfig = yaml.dump(kubeconfig, default_flow_style=False)
+                elif not isinstance(kubeconfig, str):
+                    kubeconfig = str(kubeconfig)
+                
+                return kubeconfig
+            except Exception:
+                raise ValueError(f"Failed to generate kubeconfig: {str(e)}")
+    
+    def get_kubeconfig_from_project(self, project_id, flatten=False):
+        """Get kubeconfig from project ID.
+        
+        Args:
+            project_id: Project ID (can be in format "cluster-id:project-id" or just "project-id")
+            flatten: Whether to flatten the kubeconfig (default: False)
+            
+        Returns:
+            str: Kubeconfig content
+        """
+        # Handle project ID format: "cluster-id:project-id" or just "project-id"
+        if ':' in project_id:
+            parts = project_id.split(':', 1)
+            cluster_id = parts[0]
+            project_id_actual = parts[1]
+            
+            # Use cluster_id directly if provided
+            return self.generate_kubeconfig(cluster_id, flatten=flatten)
+        else:
+            # Get project info to find cluster ID
+            project_info = self.get_project_info(project_id)
+            cluster_id = project_info.get('clusterId')
+            
+            if not cluster_id:
+                raise ValueError(f"Project {project_id} does not have a cluster ID")
+            
+            # Generate kubeconfig from cluster
+            return self.generate_kubeconfig(cluster_id, flatten=flatten)
     
     def validate_token(self):
         """Validate token and check if it's expired.

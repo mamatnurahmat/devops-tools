@@ -56,23 +56,73 @@ def cmd_list_clusters(args):
 
 def cmd_list_projects(args):
     """List projects."""
+    import json
+    from pathlib import Path
+    
     try:
         api = RancherAPI()
         projects = api.list_projects(cluster_id=args.cluster)
         
+        # Filter by System project name if --system flag is set
+        if args.system:
+            projects = [p for p in projects if p.get('name', '').lower() == 'system']
+        
+        # Get all clusters to map cluster ID to name
+        clusters = {}
+        try:
+            all_clusters = api.list_clusters()
+            for cluster in all_clusters:
+                clusters[cluster.get('id', '')] = cluster.get('name', 'Unknown')
+        except Exception:
+            # If can't get clusters, continue without cluster names
+            pass
+        
+        # Save to file if --save flag is set
+        if args.save:
+            # --save requires --system flag
+            if not args.system:
+                print("Error: --save requires --system flag", file=sys.stderr)
+                print("Usage: devops project --system --save", file=sys.stderr)
+                sys.exit(1)
+            
+            # Ensure .devops directory exists
+            devops_dir = Path.home() / '.devops'
+            devops_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create simple format: list of dicts with id and cluster_name
+            simple_data = []
+            for project in projects:
+                cluster_id = project.get('clusterId', '')
+                cluster_name = clusters.get(cluster_id, cluster_id if cluster_id else 'N/A')
+                
+                simple_data.append({
+                    'id': project.get('id', ''),
+                    'cluster_name': cluster_name
+                })
+            
+            # Save to file
+            output_file = devops_dir / 'project.json'
+            with open(output_file, 'w') as f:
+                json.dump(simple_data, f, indent=2)
+            
+            print(f"? Saved {len(simple_data)} project(s) to {output_file}")
+        
         if args.json:
-            import json
             print(json.dumps(projects, indent=2))
         else:
             rows = []
             for project in projects:
+                cluster_id = project.get('clusterId', '')
+                cluster_name = clusters.get(cluster_id, cluster_id if cluster_id else 'N/A')
+                
                 rows.append([
                     project.get('id', ''),
                     project.get('name', ''),
-                    project.get('clusterId', ''),
+                    cluster_name,
+                    cluster_id,
                     project.get('state', '')
                 ])
-            print_table(['ID', 'Name', 'Cluster ID', 'State'], rows)
+            print_table(['ID', 'Name', 'Cluster Name', 'Cluster ID', 'State'], rows)
     except Exception as e:
         print(f"Error listing projects: {e}", file=sys.stderr)
         sys.exit(1)
@@ -282,6 +332,222 @@ def cmd_token_check(args):
         sys.exit(1)
 
 
+def cmd_kube_config(args):
+    """Get kubeconfig from project and save to ~/.kube/config."""
+    import os
+    import yaml
+    from pathlib import Path
+    
+    try:
+        api = RancherAPI()
+        
+        if not args.project_id:
+            print("Error: project_id is required", file=sys.stderr)
+            print("Usage: devops kube-config <project-id>", file=sys.stderr)
+            sys.exit(1)
+        
+        project_id = args.project_id
+        
+        print(f"Getting kubeconfig for project: {project_id}")
+        
+        # Get kubeconfig from project
+        # flatten defaults to True via set_defaults
+        kubeconfig_content = api.get_kubeconfig_from_project(project_id, flatten=args.flatten)
+        
+        # Parse kubeconfig
+        if isinstance(kubeconfig_content, str):
+            kubeconfig_data = yaml.safe_load(kubeconfig_content)
+        else:
+            kubeconfig_data = kubeconfig_content
+        
+        # Ensure ~/.kube directory exists
+        kube_dir = Path.home() / '.kube'
+        kube_dir.mkdir(parents=True, exist_ok=True)
+        kube_config_path = kube_dir / 'config'
+        
+        # Read existing config if exists
+        existing_config = None
+        if kube_config_path.exists() and not args.replace:
+            try:
+                with open(kube_config_path, 'r') as f:
+                    existing_config = yaml.safe_load(f)
+            except Exception as e:
+                print(f"Warning: Could not read existing kubeconfig: {e}", file=sys.stderr)
+                existing_config = None
+        
+        # Merge or replace config
+        if existing_config and not args.replace:
+            # Merge: add new context to existing config
+            if 'clusters' not in existing_config:
+                existing_config['clusters'] = []
+            if 'users' not in existing_config:
+                existing_config['users'] = []
+            if 'contexts' not in existing_config:
+                existing_config['contexts'] = []
+            if 'current-context' not in existing_config:
+                existing_config['current-context'] = ''
+            
+            # Add clusters from new config
+            if 'clusters' in kubeconfig_data:
+                for cluster in kubeconfig_data['clusters']:
+                    # Check if cluster already exists
+                    cluster_exists = any(
+                        c.get('name') == cluster.get('name') 
+                        for c in existing_config['clusters']
+                    )
+                    if not cluster_exists:
+                        existing_config['clusters'].append(cluster)
+            
+            # Add users from new config
+            if 'users' in kubeconfig_data:
+                for user in kubeconfig_data['users']:
+                    user_exists = any(
+                        u.get('name') == user.get('name') 
+                        for u in existing_config['users']
+                    )
+                    if not user_exists:
+                        existing_config['users'].append(user)
+            
+            # Add contexts from new config
+            if 'contexts' in kubeconfig_data:
+                for context in kubeconfig_data['contexts']:
+                    context_exists = any(
+                        c.get('name') == context.get('name') 
+                        for c in existing_config['contexts']
+                    )
+                    if not context_exists:
+                        existing_config['contexts'].append(context)
+                    else:
+                        # Update existing context
+                        for i, c in enumerate(existing_config['contexts']):
+                            if c.get('name') == context.get('name'):
+                                existing_config['contexts'][i] = context
+                                break
+            
+            # Set current context if specified or if not set
+            if args.set_context and 'contexts' in kubeconfig_data and kubeconfig_data['contexts']:
+                existing_config['current-context'] = kubeconfig_data['contexts'][0].get('name')
+            elif not existing_config['current-context'] and 'contexts' in kubeconfig_data and kubeconfig_data['contexts']:
+                existing_config['current-context'] = kubeconfig_data['contexts'][0].get('name')
+            
+            final_config = existing_config
+        else:
+            # Replace: use new config as-is
+            final_config = kubeconfig_data
+        
+        # Write config to file
+        with open(kube_config_path, 'w') as f:
+            yaml.dump(final_config, f, default_flow_style=False, sort_keys=False)
+        
+        # Set proper permissions
+        os.chmod(kube_config_path, 0o600)
+        
+        print(f"? Kubeconfig saved to {kube_config_path}")
+        
+        if 'contexts' in final_config and final_config['contexts']:
+            current_context = final_config.get('current-context', '')
+            if current_context:
+                print(f"? Current context: {current_context}")
+            
+            print(f"\nAvailable contexts:")
+            for ctx in final_config['contexts']:
+                ctx_name = ctx.get('name', '')
+                marker = " (current)" if ctx_name == current_context else ""
+                print(f"  - {ctx_name}{marker}")
+        
+    except Exception as e:
+        print(f"Error getting kubeconfig: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_update(args):
+    """Update DevOps Tools from GitHub repository."""
+    import subprocess
+    import shutil
+    import tempfile
+    from pathlib import Path
+    
+    repo_url = "https://github.com/mamatnurahmat/devops-tools"
+    branch = "main"
+    commit_hash = args.commit_hash
+    
+    # Check if git is available
+    if not shutil.which('git'):
+        print("Error: git is not installed or not in PATH", file=sys.stderr)
+        print("Please install git first: https://git-scm.com/downloads", file=sys.stderr)
+        sys.exit(1)
+    
+    # Create temporary directory for cloning
+    temp_dir = None
+    try:
+        temp_dir = tempfile.mkdtemp(prefix='devops-update-')
+        print(f"?? Cloning repository from {repo_url}...")
+        print(f"   Branch: {branch}")
+        print(f"   Commit: {commit_hash}")
+        
+        # Clone repository
+        clone_cmd = ['git', 'clone', '--branch', branch, '--single-branch', repo_url, temp_dir]
+        result = subprocess.run(clone_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error cloning repository: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        
+        print("? Repository cloned successfully")
+        
+        # Checkout to specific commit
+        print(f"?? Checking out commit {commit_hash}...")
+        checkout_cmd = ['git', '-C', temp_dir, 'checkout', commit_hash]
+        result = subprocess.run(checkout_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error checking out commit: {result.stderr}", file=sys.stderr)
+            print(f"Commit {commit_hash} may not exist in branch {branch}", file=sys.stderr)
+            sys.exit(1)
+        
+        print("? Commit checked out successfully")
+        
+        # Check if install.sh exists
+        install_script = Path(temp_dir) / 'install.sh'
+        if not install_script.exists():
+            print(f"Error: install.sh not found in repository", file=sys.stderr)
+            sys.exit(1)
+        
+        # Run installer
+        print("\n?? Running installer...")
+        print("=" * 50)
+        
+        # Make install.sh executable
+        install_script.chmod(0o755)
+        
+        # Run installer script
+        install_cmd = ['bash', str(install_script)]
+        result = subprocess.run(install_cmd, cwd=temp_dir)
+        
+        if result.returncode != 0:
+            print(f"\nError running installer (exit code: {result.returncode})", file=sys.stderr)
+            sys.exit(1)
+        
+        print("\n" + "=" * 50)
+        print("? Update completed successfully!")
+        print(f"   Updated to commit: {commit_hash}")
+        
+    except KeyboardInterrupt:
+        print("\n\nUpdate cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during update: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        # Clean up temporary directory
+        if temp_dir and Path(temp_dir).exists():
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"\n?? Cleaned up temporary files")
+            except Exception:
+                pass
+
+
 def cmd_config(args):
     """Configure Rancher API settings."""
     if args.url or args.token:
@@ -342,6 +608,11 @@ def main():
     token_parser.add_argument('--json', action='store_true', help='Output as JSON')
     token_parser.set_defaults(func=cmd_token_check)
     
+    # Update command
+    update_parser = subparsers.add_parser('update', help='Update DevOps Tools from GitHub repository')
+    update_parser.add_argument('commit_hash', help='Git commit hash to update to')
+    update_parser.set_defaults(func=cmd_update)
+    
     # Config command
     config_parser = subparsers.add_parser('config', help='Configure Rancher API settings')
     config_parser.add_argument('--url', help='Rancher API URL')
@@ -360,6 +631,10 @@ def main():
     # List projects command
     project_parser = subparsers.add_parser('project', help='List projects')
     project_parser.add_argument('--cluster', help='Filter by cluster ID')
+    project_parser.add_argument('--system', action='store_true', 
+                                 help='Show only System projects')
+    project_parser.add_argument('--save', action='store_true',
+                                 help='Save System projects to $HOME/.devops/project.json (requires --system)')
     project_parser.add_argument('--json', action='store_true', help='Output as JSON')
     project_parser.set_defaults(func=cmd_list_projects)
     
@@ -369,6 +644,19 @@ def main():
     namespace_parser.add_argument('--cluster', help='Filter by cluster ID')
     namespace_parser.add_argument('--json', action='store_true', help='Output as JSON')
     namespace_parser.set_defaults(func=cmd_list_namespaces)
+    
+    # Kubeconfig command
+    kubeconfig_parser = subparsers.add_parser('kube-config', help='Get kubeconfig from project and save to ~/.kube/config')
+    kubeconfig_parser.add_argument('project_id', help='Project ID')
+    kubeconfig_parser.add_argument('--flatten', action='store_true', default=True,
+                                    help='Flatten kubeconfig (default: True)')
+    kubeconfig_parser.add_argument('--no-flatten', action='store_false', dest='flatten',
+                                    help='Do not flatten kubeconfig')
+    kubeconfig_parser.add_argument('--replace', action='store_true',
+                                    help='Replace existing kubeconfig instead of merging')
+    kubeconfig_parser.add_argument('--set-context', action='store_true',
+                                    help='Set as current context after saving')
+    kubeconfig_parser.set_defaults(func=cmd_kube_config, flatten=True)
     
     args = parser.parse_args()
     
