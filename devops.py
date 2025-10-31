@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rancher CLI - Simple CLI tool for managing Rancher resources."""
+"""DevOps Tools - Simple CLI tool for managing Rancher resources."""
 import argparse
 import getpass
 import sys
@@ -108,6 +108,64 @@ def cmd_login(args):
     # Default values
     default_url = "https://193.1.1.4"
     default_insecure = True
+    
+    # Check if config exists and token is valid
+    if config_exists() and not args.force:
+        config = load_config()
+        existing_url = config.get('url')
+        existing_token = config.get('token')
+        existing_insecure = config.get('insecure', True)
+        
+        if existing_url and existing_token:
+            # Check if token is valid and not expired
+            try:
+                result = check_token(existing_url, existing_token, existing_insecure)
+                
+                if result['valid'] and not result['expired']:
+                    print("? Existing configuration found and token is valid!")
+                    print(f"  URL: {existing_url}")
+                    print(f"  Insecure mode: {existing_insecure}")
+                    if result['expires_at']:
+                        from datetime import datetime
+                        try:
+                            exp_str = result['expires_at']
+                            if 'Z' in exp_str:
+                                exp_str = exp_str.replace('Z', '+00:00')
+                            exp_time = datetime.fromisoformat(exp_str)
+                            if exp_time.tzinfo:
+                                now = datetime.now(exp_time.tzinfo)
+                            else:
+                                now = datetime.now()
+                            delta = exp_time - now
+                            days = delta.days
+                            hours = delta.seconds // 3600
+                            minutes = (delta.seconds % 3600) // 60
+                            if days > 0:
+                                print(f"  Token expires in: {days} days, {hours} hours, {minutes} minutes")
+                            elif hours > 0:
+                                print(f"  Token expires in: {hours} hours, {minutes} minutes")
+                            else:
+                                print(f"  Token expires in: {minutes} minutes")
+                        except Exception:
+                            if result['expires_at']:
+                                print(f"  Token expires at: {result['expires_at']}")
+                    
+                    print(f"\n? No need to login. Using existing configuration.")
+                    print(f"  Config file: {get_config_file_path()}")
+                    print("\nUse 'devops login --force' to force re-login.")
+                    return
+                elif result['expired']:
+                    print("??  Existing token found but it's EXPIRED.")
+                    print("   Proceeding with login...")
+                    print()
+                elif not result['valid']:
+                    print("??  Existing token found but it's INVALID.")
+                    print("   Proceeding with login...")
+                    print()
+            except Exception as e:
+                print(f"??  Error checking existing token: {e}")
+                print("   Proceeding with login...")
+                print()
     
     # Get URL (use default if not provided and config doesn't exist)
     if args.url:
@@ -254,7 +312,7 @@ def cmd_config(args):
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description='Rancher CLI - Simple CLI tool for managing Rancher resources',
+        description='DevOps Tools - Simple CLI tool for managing Rancher resources',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -265,6 +323,8 @@ def main():
     login_parser.add_argument('--url', help=f'Rancher API URL (default: https://193.1.1.4)')
     login_parser.add_argument('--username', '-u', help='Username (prompt if not provided)')
     login_parser.add_argument('--password', '-p', help='Password (prompt if not provided)')
+    login_parser.add_argument('--force', action='store_true', 
+                              help='Force re-login even if valid token exists')
     login_parser.add_argument('--insecure', action='store_true', default=None,
                               help='Enable insecure mode (skip SSL verification, default: True)')
     login_parser.add_argument('--secure', action='store_false', dest='insecure',
