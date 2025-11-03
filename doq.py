@@ -790,24 +790,80 @@ def cmd_get_deploy(args):
     
     # Get deployment information in JSON format
     try:
-        get_result = subprocess.run(
-            ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if get_result.returncode != 0:
-            error_output = {
-                "error": f"Deployment '{deployment}' not found in namespace '{ns}'",
-                "stderr": get_result.stderr.strip() if get_result.stderr else None
-            }
-            print(json.dumps(error_output, indent=2))
-            sys.exit(1)
-        
-        # Parse and pretty print JSON
-        deployment_data = json.loads(get_result.stdout)
-        print(json.dumps(deployment_data, indent=2))
+        # If --name flag is used, only return deployment names
+        if args.name:
+            if deployment:
+                # If specific deployment is provided, just return the name
+                print(json.dumps([deployment], indent=2))
+            else:
+                # List all deployment names
+                get_result = subprocess.run(
+                    ['kubectl', f'-n={ns}', 'get', 'deployments', '-o', 'json'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if get_result.returncode != 0:
+                    error_output = {
+                        "error": f"Failed to get deployments from namespace '{ns}'",
+                        "stderr": get_result.stderr.strip() if get_result.stderr else None
+                    }
+                    print(json.dumps(error_output, indent=2))
+                    sys.exit(1)
+                
+                # Parse JSON and extract only names
+                deployments_data = json.loads(get_result.stdout)
+                deployment_names = []
+                
+                if 'items' in deployments_data:
+                    for item in deployments_data['items']:
+                        if 'metadata' in item and 'name' in item['metadata']:
+                            deployment_names.append(item['metadata']['name'])
+                
+                # Output as JSON array
+                print(json.dumps(deployment_names, indent=2))
+        else:
+            # If deployment is not provided, list all deployments
+            if not deployment:
+                get_result = subprocess.run(
+                    ['kubectl', f'-n={ns}', 'get', 'deployments', '-o', 'json'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if get_result.returncode != 0:
+                    error_output = {
+                        "error": f"Failed to get deployments from namespace '{ns}'",
+                        "stderr": get_result.stderr.strip() if get_result.stderr else None
+                    }
+                    print(json.dumps(error_output, indent=2))
+                    sys.exit(1)
+                
+                # Parse and pretty print JSON
+                deployments_data = json.loads(get_result.stdout)
+                print(json.dumps(deployments_data, indent=2))
+            else:
+                # Get specific deployment
+                get_result = subprocess.run(
+                    ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if get_result.returncode != 0:
+                    error_output = {
+                        "error": f"Deployment '{deployment}' not found in namespace '{ns}'",
+                        "stderr": get_result.stderr.strip() if get_result.stderr else None
+                    }
+                    print(json.dumps(error_output, indent=2))
+                    sys.exit(1)
+                
+                # Parse and pretty print JSON
+                deployment_data = json.loads(get_result.stdout)
+                print(json.dumps(deployment_data, indent=2))
         
     except json.JSONDecodeError:
         error_output = {"error": "Failed to parse deployment JSON"}
@@ -1365,9 +1421,10 @@ def main():
     # Get deployment command
     get_deploy_parser = subparsers.add_parser('get-deploy',
                                               help='Get deployment resource information in JSON format',
-                                              description='Get deployment resource information in JSON format. Automatically switches to correct context based on namespace. Output is silent (JSON only).')
+                                              description='Get deployment resource information in JSON format. Automatically switches to correct context based on namespace. Output is silent (JSON only). If deployment name is not provided, lists all deployments in the namespace.')
     get_deploy_parser.add_argument('namespace', help='Namespace in format {project}-{env} (e.g., develop-saas)')
-    get_deploy_parser.add_argument('deployment', help='Deployment name')
+    get_deploy_parser.add_argument('deployment', nargs='?', help='Deployment name (optional, if not provided lists all deployments)')
+    get_deploy_parser.add_argument('--name', action='store_true', help='Output only deployment names as JSON array')
     get_deploy_parser.set_defaults(func=cmd_get_deploy)
     
     # Get service command
