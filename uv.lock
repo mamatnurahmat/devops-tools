@@ -136,7 +136,7 @@ wheels = [
 ]
 
 [[package]]
-name = "devops-tools"
+name = "devops-q"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

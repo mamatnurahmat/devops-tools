@@ -1,11 +1,11 @@
-"""Version tracking for DevOps Tools CLI."""
+"""Version tracking for DevOps Q CLI."""
 import json
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict
 
 
-VERSION_FILE = Path.home() / '.devops' / 'version.json'
+VERSION_FILE = Path.home() / '.doq' / 'version.json'
 REPO_URL = "https://github.com/mamatnurahmat/devops-tools"
 BRANCH = "main"
 

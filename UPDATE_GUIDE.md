@@ -1,6 +1,6 @@
-# Panduan Update Management - DevOps Tools CLI
+# Panduan Update Management - DevOps Q CLI
 
-Panduan lengkap untuk mengelola update CLI DevOps Tools menggunakan sistem version tracking berbasis commit hash.
+Panduan lengkap untuk mengelola update CLI DevOps Q menggunakan sistem version tracking berbasis commit hash.
 
 ## Daftar Isi
 
@@ -12,7 +12,7 @@ Panduan lengkap untuk mengelola update CLI DevOps Tools menggunakan sistem versi
 
 ## Konsep Version Tracking
 
-DevOps Tools CLI menggunakan sistem version tracking berbasis **commit hash** untuk mengelola update. Setiap instalasi akan menyimpan informasi berikut ke file `~/.devops/version.json`:
+DevOps Q CLI menggunakan sistem version tracking berbasis **commit hash** untuk mengelola update. Setiap instalasi akan menyimpan informasi berikut ke file `~/.doq/version.json`:
 
 - **commit_hash**: Hash commit yang terinstall
 - **installed_at**: Waktu instalasi (ISO format)
@@ -28,13 +28,13 @@ DevOps Tools CLI menggunakan sistem version tracking berbasis **commit hash** un
 
 ## Check Update
 
-### Command: `devops check-update`
+### Command: `doq check-update`
 
 Command ini digunakan untuk mengecek apakah ada update tersedia di repository remote.
 
 #### Cara Kerja
 
-1. Membaca commit hash terinstall dari `~/.devops/version.json`
+1. Membaca commit hash terinstall dari `~/.doq/version.json`
 2. Menggunakan `git ls-remote` untuk mendapatkan commit hash terbaru dari repository
 3. Membandingkan kedua commit hash
 4. Menampilkan hasil perbandingan
@@ -43,10 +43,10 @@ Command ini digunakan untuk mengecek apakah ada update tersedia di repository re
 
 ```bash
 # Check update (human-readable output)
-devops check-update
+doq check-update
 
 # Check update (JSON output)
-devops check-update --json
+doq check-update --json
 ```
 
 #### Output Format
@@ -65,10 +65,10 @@ Latest version: def456abc1237890123456789012345678901234
    Latest:  def456ab...
 
 Gunakan command berikut untuk update:
-   devops update def456abc1237890123456789012345678901234
+   doq update def456abc1237890123456789012345678901234
 
 Atau update otomatis ke latest:
-   devops update --latest
+   doq update --latest
 ```
 
 **JSON:**
@@ -100,7 +100,7 @@ Atau update otomatis ke latest:
 
 ## Update CLI
 
-### Command: `devops update`
+### Command: `doq update`
 
 Command ini digunakan untuk melakukan update CLI ke versi tertentu atau ke versi terbaru.
 
@@ -109,7 +109,7 @@ Command ini digunakan untuk melakukan update CLI ke versi tertentu atau ke versi
 #### 1. Update Otomatis (Recommended)
 
 ```bash
-devops update
+doq update
 ```
 
 **Cara Kerja:**
@@ -124,7 +124,7 @@ devops update
 #### 2. Update ke Latest Commit
 
 ```bash
-devops update --latest
+doq update --latest
 ```
 
 **Cara Kerja:**
@@ -138,7 +138,7 @@ devops update --latest
 #### 3. Update ke Commit Tertentu
 
 ```bash
-devops update <commit_hash>
+doq update <commit_hash>
 ```
 
 **Cara Kerja:**
@@ -166,10 +166,10 @@ devops update <commit_hash>
 3. **Run Installer**
    - Jalankan `install.sh` dari repository yang di-clone
    - Installer akan menggunakan `uv` untuk install dependencies
-   - Membuat wrapper script baru di `~/.local/bin/devops`
+   - Membuat wrapper script baru di `~/.local/bin/doq`
 
 4. **Update Version Tracking**
-   - Menyimpan commit hash baru ke `~/.devops/version.json`
+   - Menyimpan commit hash baru ke `~/.doq/version.json`
    - Menyimpan waktu instalasi
 
 5. **Cleanup**
@@ -179,22 +179,22 @@ devops update <commit_hash>
 
 ```bash
 # Update otomatis ke latest (jika ada update)
-devops update
+doq update
 
 # Update ke latest commit secara eksplisit
-devops update --latest
+doq update --latest
 
 # Update ke commit tertentu
-devops update abc123def4567890123456789012345678901234
+doq update abc123def4567890123456789012345678901234
 
 # Update ke commit sebelumnya (rollback)
-devops update def456abc1237890123456789012345678901234
+doq update def456abc1237890123456789012345678901234
 ```
 
 ### Output Update
 
 ```
-🔍 Cloning repository from https://github.com/mamatnurahmat/devops-tools...
+🔍 Cloning repository from https://github.com/mamatnurahmat/doq-tools...
    Branch: main
    Commit: def456abc1237890123456789012345678901234
 ✅ Repository cloned successfully
@@ -203,7 +203,7 @@ devops update def456abc1237890123456789012345678901234
 
 🔍 Running installer...
 ==================================================
-✅ DevOps Tools Installer
+✅ DevOps Q Installer
 ==========================
 
 ✅ Python3 ditemukan: 3.10.0
@@ -212,7 +212,7 @@ devops update def456abc1237890123456789012345678901234
 🔍 Menginstall dependencies dengan uv...
 ✅ Dependencies terinstall
 ✅ Directory /home/user/.local/bin siap
-✅ Wrapper script dibuat: /home/user/.local/bin/devops
+✅ Wrapper script dibuat: /home/user/.local/bin/doq
 ✅ Version tracking diupdate: def456abc1237890123456789012345678901234
 
 ==================================================
@@ -224,7 +224,7 @@ devops update def456abc1237890123456789012345678901234
 
 ## Version Information
 
-### Command: `devops version`
+### Command: `doq version`
 
 Command ini menampilkan informasi versi yang terinstall.
 
@@ -232,21 +232,21 @@ Command ini menampilkan informasi versi yang terinstall.
 
 ```bash
 # Human-readable output
-devops version
+doq version
 
 # JSON output
-devops version --json
+doq version --json
 ```
 
 #### Output Format
 
 **Human-readable:**
 ```
-🔍 DevOps Tools Version Information
+🔍 DevOps Q Version Information
 ==================================================
 Commit Hash: abc123def4567890123456789012345678901234
 Installed At: 2024-01-15T10:30:00.123456
-Repository: https://github.com/mamatnurahmat/devops-tools
+Repository: https://github.com/mamatnurahmat/doq-tools
 Branch: main
 ```
 
@@ -255,7 +255,7 @@ Branch: main
 {
   "commit_hash": "abc123def4567890123456789012345678901234",
   "installed_at": "2024-01-15T10:30:00.123456",
-  "repo_url": "https://github.com/mamatnurahmat/devops-tools",
+  "repo_url": "https://github.com/mamatnurahmat/doq-tools",
   "branch": "main"
 }
 ```
@@ -305,9 +305,9 @@ Error: Cannot determine current version
 ```
 
 **Solusi:**
-- Jalankan `devops version` untuk melihat apakah file ada
+- Jalankan `doq version` untuk melihat apakah file ada
 - Jika tidak ada, reinstall menggunakan `./install.sh`
-- File seharusnya ada di `~/.devops/version.json`
+- File seharusnya ada di `~/.doq/version.json`
 
 #### 4. Commit Hash Tidak Valid
 
@@ -319,7 +319,7 @@ Error: Commit abc123... may not exist in branch main
 **Solusi:**
 - Cek commit hash yang digunakan
 - Pastikan commit hash ada di branch main
-- Gunakan `devops check-update` untuk mendapatkan commit hash terbaru
+- Gunakan `doq check-update` untuk mendapatkan commit hash terbaru
 
 #### 5. Installer Script Gagal
 
@@ -339,29 +339,29 @@ Error running installer (exit code: 1)
 1. **Regular Update Check**
    ```bash
    # Check update secara berkala
-   devops check-update
+   doq check-update
    ```
 
 2. **Backup Sebelum Update**
    ```bash
    # Simpan version saat ini
-   devops version > ~/devops-version-backup.txt
+   doq version > ~/doq-version-backup.txt
    
    # Update
-   devops update
+   doq update
    ```
 
 3. **Test Setelah Update**
    ```bash
    # Test basic functionality
-   devops --help
-   devops version
+   doq --help
+   doq version
    ```
 
 4. **Rollback jika Diperlukan**
    ```bash
    # Rollback ke commit sebelumnya
-   devops update <previous_commit_hash>
+   doq update <previous_commit_hash>
    ```
 
 ## Workflow Update Management
@@ -370,34 +370,34 @@ Error running installer (exit code: 1)
 
 ```bash
 # 1. Check apakah ada update
-devops check-update
+doq check-update
 
 # 2. Jika ada update, review changes di GitHub
 # (buka GitHub repository dan lihat commits)
 
 # 3. Update ke latest
-devops update
+doq update
 
 # 4. Verify instalasi
-devops version
-devops --help
+doq version
+doq --help
 ```
 
 ### Workflow Testing
 
 ```bash
 # 1. Check update tersedia
-devops check-update --json
+doq check-update --json
 
 # 2. Update ke latest
-devops update --latest
+doq update --latest
 
 # 3. Test functionality
-devops login
-devops cluster
+doq login
+doq cluster
 
 # 4. Jika ada masalah, rollback
-devops update <previous_commit_hash>
+doq update <previous_commit_hash>
 ```
 
 ## Integrasi dengan CI/CD
@@ -409,15 +409,15 @@ Jika ingin mengintegrasikan update management ke CI/CD pipeline:
 # Script untuk auto-update di CI/CD
 
 # Check update
-UPDATE_INFO=$(devops check-update --json)
+UPDATE_INFO=$(doq check-update --json)
 HAS_UPDATE=$(echo $UPDATE_INFO | jq -r '.has_update')
 
 if [ "$HAS_UPDATE" = "true" ]; then
     echo "Update tersedia, melakukan update..."
-    devops update --latest
+    doq update --latest
     
     # Verify update
-    NEW_VERSION=$(devops version --json)
+    NEW_VERSION=$(doq version --json)
     echo "Updated to: $(echo $NEW_VERSION | jq -r '.commit_hash')"
 else
     echo "Sudah menggunakan versi terbaru"
@@ -429,9 +429,9 @@ fi
 Sistem update management berbasis commit hash memberikan kontrol yang lebih baik terhadap versi CLI yang terinstall. Dengan menggunakan `uv` sebagai package manager, proses update menjadi lebih cepat dan reliable.
 
 **Key Takeaways:**
-- ✅ Gunakan `devops check-update` untuk mengecek update tersedia
-- ✅ Gunakan `devops update` untuk update otomatis ke latest
-- ✅ Gunakan `devops version` untuk melihat informasi versi
+- ✅ Gunakan `doq check-update` untuk mengecek update tersedia
+- ✅ Gunakan `doq update` untuk update otomatis ke latest
+- ✅ Gunakan `doq version` untuk melihat informasi versi
 - ✅ Sistem menggunakan commit hash untuk version tracking yang precise
 - ✅ Update menggunakan `uv` untuk instalasi yang lebih cepat
 

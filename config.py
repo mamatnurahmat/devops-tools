@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv, set_key
 
-CONFIG_DIR = Path.home() / ".devops"
+CONFIG_DIR = Path.home() / ".doq"
 CONFIG_FILE = CONFIG_DIR / ".env"
 
 
@@ -15,7 +15,7 @@ def ensure_config_dir():
 
 
 def load_config():
-    """Load configuration from $HOME/.devops/.env"""
+    """Load configuration from $HOME/.doq/.env"""
     ensure_config_dir()
     load_dotenv(CONFIG_FILE)
     return {
@@ -26,7 +26,7 @@ def load_config():
 
 
 def save_config(url, token, insecure=True):
-    """Save configuration to $HOME/.devops/.env"""
+    """Save configuration to $HOME/.doq/.env"""
     ensure_config_dir()
     set_key(CONFIG_FILE, 'RANCHER_URL', url)
     set_key(CONFIG_FILE, 'RANCHER_TOKEN', token)

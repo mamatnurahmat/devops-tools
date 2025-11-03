@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# DevOps Tools Installer
-# Instalasi DevOps CLI tools untuk mengelola Rancher resources
+# DevOps Q Installer
+# Instalasi DevOps Q CLI tools untuk mengelola Rancher resources
 # Menggunakan uv package manager untuk instalasi yang lebih cepat dan reliable
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
-BIN_NAME="devops"
+BIN_NAME="doq"
 
-echo "?? DevOps Tools Installer"
+echo "?? DevOps Q Installer"
 echo "=========================="
 echo ""
 
@@ -63,17 +63,17 @@ echo "? Directory ${INSTALL_DIR} siap"
 WRAPPER_SCRIPT="${INSTALL_DIR}/${BIN_NAME}"
 cat > "${WRAPPER_SCRIPT}" << 'EOF'
 #!/usr/bin/env bash
-# DevOps Tools CLI Wrapper
+# DevOps Q CLI Wrapper
 # Menggunakan uv untuk menjalankan CLI dengan environment yang terisolasi
 
 # Check if uv is available
 if command -v uv &> /dev/null; then
-    # Use uv run to execute devops module directly
+    # Use uv run to execute doq module directly
     # Package is already installed via 'uv pip install -e .', so we can run it directly
-    uv run python -m devops "$@"
+    uv run python -m doq "$@"
 else
     # Fallback to direct python execution
-    python3 -m devops "$@"
+    python3 -m doq "$@"
 fi
 EOF
 
@@ -114,7 +114,7 @@ fi
 echo ""
 echo "? Instalasi selesai!"
 echo ""
-echo "Gunakan command berikut untuk menjalankan DevOps Tools:"
+echo "Gunakan command berikut untuk menjalankan DevOps Q:"
 echo "  ${BIN_NAME} --help"
 echo ""
 echo "Contoh:"

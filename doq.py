@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DevOps Tools - Simple CLI tool for managing Rancher resources."""
+"""DevOps Q - Simple CLI tool for managing Rancher resources."""
 import argparse
 import getpass
 import sys
@@ -83,12 +83,12 @@ def cmd_list_projects(args):
             # --save requires --system flag
             if not args.system:
                 print("Error: --save requires --system flag", file=sys.stderr)
-                print("Usage: devops project --system --save", file=sys.stderr)
+                print("Usage: doq project --system --save", file=sys.stderr)
                 sys.exit(1)
             
-            # Ensure .devops directory exists
-            devops_dir = Path.home() / '.devops'
-            devops_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure .doq directory exists
+            doq_dir = Path.home() / '.doq'
+            doq_dir.mkdir(parents=True, exist_ok=True)
             
             # Create simple format: list of dicts with id and cluster_name
             simple_data = []
@@ -102,7 +102,7 @@ def cmd_list_projects(args):
                 })
             
             # Save to file
-            output_file = devops_dir / 'project.json'
+            output_file = doq_dir / 'project.json'
             with open(output_file, 'w') as f:
                 json.dump(simple_data, f, indent=2)
             
@@ -203,7 +203,7 @@ def cmd_login(args):
                     
                     print(f"\n? No need to login. Using existing configuration.")
                     print(f"  Config file: {get_config_file_path()}")
-                    print("\nUse 'devops login --force' to force re-login.")
+                    print("\nUse 'doq login --force' to force re-login.")
                     return
                 elif result['expired']:
                     print("??  Existing token found but it's EXPIRED.")
@@ -273,7 +273,7 @@ def cmd_token_check(args):
         
         if not url or not token:
             print("Error: URL and token must be configured or provided", file=sys.stderr)
-            print("Use 'rancher_cli.py login' to configure or provide --url and --token", file=sys.stderr)
+            print("Use 'doq login' to configure or provide --url and --token", file=sys.stderr)
             sys.exit(1)
         
         if args.json:
@@ -344,7 +344,7 @@ def cmd_kube_config(args):
         
         if not args.project_id:
             print("Error: project_id is required", file=sys.stderr)
-            print("Usage: devops kube-config <project-id>", file=sys.stderr)
+            print("Usage: doq kube-config <project-id>", file=sys.stderr)
             sys.exit(1)
         
         project_id = args.project_id
@@ -463,113 +463,33 @@ def cmd_kube_config(args):
 
 def cmd_ns(args):
     """Switch kubectl context based on namespace format {project}-{env}."""
-    import subprocess
-    import re
-    import shutil
-    
     ns_input = args.namespace
     
-    # Parse format: {project}-{env}
-    # Example: develop-saas -> env: develop, project: saas
-    parts = ns_input.split('-', 1)
-    if len(parts) != 2:
-        print(f"Error: Invalid namespace format. Expected format: {{project}}-{{env}}", file=sys.stderr)
-        print(f"Example: develop-saas (where 'develop' is env and 'saas' is project)", file=sys.stderr)
-        sys.exit(1)
+    print(f"?? Looking for context matching namespace: {ns_input}")
+    selected_context = _switch_context_by_namespace(ns_input)
     
-    env, project = parts
-    print(f"?? Looking for context matching env: {env}, project: {project}")
-    
-    # Check if kubectl is available
-    if not shutil.which('kubectl'):
-        print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
-        print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
-        sys.exit(1)
-    
-    # Get list of contexts
-    try:
-        result = subprocess.run(
-            ['kubectl', 'config', 'get-contexts', '-o', 'name'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode != 0:
-            print(f"Error getting contexts: {result.stderr}", file=sys.stderr)
-            sys.exit(1)
-        
-        contexts = [ctx.strip() for ctx in result.stdout.strip().split('\n') if ctx.strip()]
-        
-        if not contexts:
-            print("Error: No contexts found in kubectl config", file=sys.stderr)
-            sys.exit(1)
-        
-        # Search for context matching env using regex
-        # Pattern: look for env in context name (case-insensitive)
-        # Examples: rke2-develop-qoin matches "develop"
-        pattern = re.compile(rf'\b{re.escape(env)}\b', re.IGNORECASE)
-        matched_contexts = [ctx for ctx in contexts if pattern.search(ctx)]
-        
-        if not matched_contexts:
-            print(f"?? No context found matching env '{env}'")
-            print(f"\nAvailable contexts:")
-            for ctx in contexts:
-                print(f"  - {ctx}")
-            print(f"\nSuggestion: Check if env '{env}' exists in any context name")
-            sys.exit(1)
-        
-        # If multiple matches, prefer exact match or first match
-        # Priority: exact match > contains match
-        exact_match = None
-        for ctx in matched_contexts:
-            if env.lower() in ctx.lower():
-                exact_match = ctx
-                break
-        
-        selected_context = exact_match if exact_match else matched_contexts[0]
-        
-        if len(matched_contexts) > 1:
-            print(f"?? Multiple contexts found matching env '{env}':")
-            for ctx in matched_contexts:
-                marker = " (selected)" if ctx == selected_context else ""
-                print(f"  - {ctx}{marker}")
-        
-        # Switch to selected context
-        print(f"\n?? Switching to context: {selected_context}")
-        result = subprocess.run(
-            ['kubectl', 'config', 'use-context', selected_context],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode != 0:
-            print(f"Error switching context: {result.stderr}", file=sys.stderr)
-            sys.exit(1)
-        
+    if selected_context:
         print(f"? Switched to context: {selected_context}")
         
         # Verify current context
-        verify_result = subprocess.run(
-            ['kubectl', 'config', 'current-context'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if verify_result.returncode == 0:
-            current = verify_result.stdout.strip()
-            if current == selected_context:
-                print(f"? Current context verified: {current}")
-            else:
-                print(f"?? Warning: Expected context {selected_context}, but current is {current}")
-        
-    except subprocess.TimeoutExpired:
-        print("Error: kubectl command timed out", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        import subprocess
+        try:
+            verify_result = subprocess.run(
+                ['kubectl', 'config', 'current-context'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if verify_result.returncode == 0:
+                current = verify_result.stdout.strip()
+                if current == selected_context:
+                    print(f"? Current context verified: {current}")
+                else:
+                    print(f"?? Warning: Expected context {selected_context}, but current is {current}")
+        except Exception:
+            pass
+    else:
         sys.exit(1)
 
 
@@ -668,38 +588,6 @@ def _switch_context_by_namespace(ns_input, silent=False):
         if not silent:
             print(f"Error: {e}", file=sys.stderr)
         return None
-
-
-def cmd_ns(args):
-    """Switch kubectl context based on namespace format {project}-{env}."""
-    ns_input = args.namespace
-    
-    print(f"?? Looking for context matching namespace: {ns_input}")
-    selected_context = _switch_context_by_namespace(ns_input)
-    
-    if selected_context:
-        print(f"? Switched to context: {selected_context}")
-        
-        # Verify current context
-        import subprocess
-        try:
-            verify_result = subprocess.run(
-                ['kubectl', 'config', 'current-context'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if verify_result.returncode == 0:
-                current = verify_result.stdout.strip()
-                if current == selected_context:
-                    print(f"? Current context verified: {current}")
-                else:
-                    print(f"?? Warning: Expected context {selected_context}, but current is {current}")
-        except Exception:
-            pass
-    else:
-        sys.exit(1)
 
 
 def cmd_get_cm(args):
@@ -812,7 +700,7 @@ def cmd_get_secret(args):
             # Add note that data is decoded
             if 'annotations' not in secret_data['metadata']:
                 secret_data['metadata']['annotations'] = {}
-            secret_data['metadata']['annotations']['_devops.decoded'] = 'true'
+            secret_data['metadata']['annotations']['_doq.decoded'] = 'true'
         
         # Pretty print JSON
         print(json.dumps(secret_data, indent=2))
@@ -1171,9 +1059,9 @@ def cmd_check_update(args):
             print(f"   Current: {update_info['current_hash'][:8]}...")
             print(f"   Latest:  {update_info['latest_hash'][:8]}...")
             print("\nGunakan command berikut untuk update:")
-            print(f"   devops update {update_info['latest_hash']}")
+            print(f"   doq update {update_info['latest_hash']}")
             print("\nAtau update otomatis ke latest:")
-            print("   devops update --latest")
+            print("   doq update --latest")
         else:
             print("\n? Sudah menggunakan versi terbaru!")
             print(f"   Commit: {update_info['current_hash']}")
@@ -1184,7 +1072,7 @@ def cmd_check_update(args):
 
 
 def cmd_update(args):
-    """Update DevOps Tools from GitHub repository."""
+    """Update DevOps Q from GitHub repository."""
     import subprocess
     import shutil
     import tempfile
@@ -1242,7 +1130,7 @@ def cmd_update(args):
     # Create temporary directory for cloning
     temp_dir = None
     try:
-        temp_dir = tempfile.mkdtemp(prefix='devops-update-')
+        temp_dir = tempfile.mkdtemp(prefix='doq-update-')
         print(f"\n?? Cloning repository from {repo_url}...")
         print(f"   Branch: {branch}")
         print(f"   Commit: {commit_hash}")
@@ -1323,7 +1211,7 @@ def cmd_version(args):
             print(json.dumps(version_info, indent=2))
             return
         
-        print("?? DevOps Tools Version Information")
+        print("?? DevOps Q Version Information")
         print("=" * 50)
         print(f"Commit Hash: {version_info.get('commit_hash', 'unknown')}")
         print(f"Installed At: {version_info.get('installed_at', 'unknown')}")
@@ -1365,7 +1253,7 @@ def cmd_config(args):
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description='DevOps Tools - Simple CLI tool for managing Rancher resources',
+        description='DevOps Q - Simple CLI tool for managing Rancher resources',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -1402,8 +1290,8 @@ def main():
     
     # Update command
     update_parser = subparsers.add_parser('update', 
-                                          help='Update DevOps Tools from GitHub repository',
-                                          description='Update DevOps Tools to latest version or specific commit. '
+                                          help='Update DevOps Q from GitHub repository',
+                                          description='Update DevOps Q to latest version or specific commit. '
                                                     'If no commit hash is provided, will update to latest commit from main branch.')
     update_parser.add_argument('commit_hash', nargs='?', 
                               help='Git commit hash to update to (optional, defaults to latest if not provided)')
@@ -1437,7 +1325,7 @@ def main():
     project_parser.add_argument('--system', action='store_true', 
                                  help='Show only System projects')
     project_parser.add_argument('--save', action='store_true',
-                                 help='Save System projects to $HOME/.devops/project.json (requires --system)')
+                                 help='Save System projects to $HOME/.doq/project.json (requires --system)')
     project_parser.add_argument('--json', action='store_true', help='Output as JSON')
     project_parser.set_defaults(func=cmd_list_projects)
     
@@ -1530,3 +1418,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
