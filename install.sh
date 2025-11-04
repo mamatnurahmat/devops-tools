@@ -8,7 +8,7 @@ set -e
 # Default values
 REPO_URL="${REPO_URL:-https://github.com/mamatnurahmat/devops-tools}"
 REPO_REF="${REPO_REF:-main}"
-PREFIX="${PREFIX:-/opt/devops-q}"
+PREFIX="${PREFIX:-${HOME}/.local/share/devops-q}"
 INSTALL_DIR="${HOME}/.local/bin"
 BIN_NAME="doq"
 SKIP_CLONE="${SKIP_CLONE:-}"
@@ -79,7 +79,11 @@ if [ -z "$PROJECT_DIR" ] && [ -z "$SKIP_CLONE" ]; then
         echo "   Branch/Ref: ${REPO_REF}"
         
         # Create parent directory if it doesn't exist
-        mkdir -p "$(dirname "${PREFIX}")"
+        mkdir -p "$(dirname "${PREFIX}")" || {
+            echo "?? Error: Gagal membuat parent directory $(dirname "${PREFIX}")"
+            echo "   Pastikan Anda memiliki permission untuk menulis di direktori tersebut"
+            exit 1
+        }
         
         # Clone repository
         if [ -d "${PREFIX}" ]; then
@@ -95,7 +99,21 @@ if [ -z "$PROJECT_DIR" ] && [ -z "$SKIP_CLONE" ]; then
             fi
         else
             git clone --branch "${REPO_REF}" --single-branch "${REPO_URL}" "${PREFIX}" || {
-                echo "?? Error: Gagal meng-clone repository"
+                echo "?? Error: Gagal meng-clone repository ke ${PREFIX}"
+                echo ""
+                echo "Kemungkinan penyebab:"
+                echo "  1. Tidak memiliki permission untuk menulis di $(dirname "${PREFIX}")"
+                echo "  2. Git tidak terinstall"
+                echo "  3. Tidak ada koneksi internet"
+                echo ""
+                echo "Solusi:"
+                echo "  1. Gunakan --prefix untuk mengubah lokasi instalasi:"
+                echo "     curl -fsSL ... | bash -s -- --yes --prefix ${HOME}/.local/share/devops-q"
+                echo ""
+                echo "  2. Atau clone manual dengan sudo (jika ingin di /opt):"
+                echo "     sudo git clone ${REPO_URL} ${PREFIX}"
+                echo "     sudo chown -R \$(whoami):\$(whoami) ${PREFIX}"
+                echo "     cd ${PREFIX} && ./install.sh"
                 exit 1
             }
         fi

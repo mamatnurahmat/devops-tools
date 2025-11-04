@@ -6,14 +6,14 @@ Simple CLI tool untuk mengelola Rancher resources menggunakan Python.
 
 ### Quick Install (Cara Tercepat - Recommended)
 
-Instalasi langsung dalam satu command tanpa perlu clone repository manual:
+Instalasi langsung dalam satu command tanpa perlu clone repository manual dan **tanpa perlu root permission**:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes
 ```
 
 **Apa yang terjadi:**
-1. ✅ Script otomatis clone repository ke `/opt/devops-q`
+1. ✅ Script otomatis clone repository ke `~/.local/share/devops-q` (user directory, tidak perlu root)
 2. ✅ Menginstall `uv` package manager jika belum tersedia
 3. ✅ Menginstall semua dependencies menggunakan `uv`
 4. ✅ Membuat executable `doq` di `~/.local/bin`
@@ -30,6 +30,8 @@ echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> ~/.bashrc
 # Verifikasi instalasi
 doq --help
 ```
+
+**Catatan:** Default instalasi menggunakan direktori user (`~/.local/share/devops-q`) sehingga tidak memerlukan root permission. Jika ingin install ke `/opt` atau lokasi sistem lainnya, gunakan `--prefix` dengan sudo.
 
 ### Metode Instalasi Lainnya
 
@@ -55,12 +57,30 @@ curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/ins
 - `--yes`: Auto-clone repository tanpa konfirmasi (diperlukan untuk pipe mode)
 - `--repo URL`: URL repository GitHub (default: https://github.com/mamatnurahmat/devops-tools)
 - `--ref BRANCH`: Branch atau commit hash (default: main)
-- `--prefix DIR`: Direktori untuk clone repository (default: /opt/devops-q)
+- `--prefix DIR`: Direktori untuk clone repository (default: `~/.local/share/devops-q` - tidak perlu root)
 - `--skip-clone`: Skip auto-clone jika sudah di dalam project directory
+
+**Tips:**
+- Default `--prefix` menggunakan user directory (`~/.local/share/devops-q`) sehingga tidak memerlukan root permission
+- Jika ingin install ke `/opt` atau lokasi sistem lainnya yang memerlukan root, gunakan `sudo` atau ubah ownership setelah clone:
+  ```bash
+  curl -fsSL ... | bash -s -- --yes --prefix /opt/devops-q
+  # Jika error permission, gunakan:
+  sudo mkdir -p /opt/devops-q
+  sudo chown -R $(whoami):$(whoami) /opt/devops-q
+  curl -fsSL ... | bash -s -- --yes --prefix /opt/devops-q
+  ```
 
 **Menggunakan Environment Variables:**
 
 ```bash
+# Menggunakan user directory (default, tidak perlu root)
+REPO_URL=https://github.com/mamatnurahmat/devops-tools \
+REPO_REF=main \
+PREFIX="${HOME}/.local/share/devops-q" \
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes
+
+# Atau ke lokasi sistem (memerlukan root)
 REPO_URL=https://github.com/mamatnurahmat/devops-tools \
 REPO_REF=main \
 PREFIX=/opt/devops-q \
@@ -72,8 +92,20 @@ curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/ins
 Jika ingin clone repository secara manual terlebih dahulu:
 
 ```bash
-# Clone repository
-git clone https://github.com/mamatnurahmat/devops-tools.git /opt/devops-q
+# Clone repository ke user directory (tidak perlu root)
+git clone https://github.com/mamatnurahmat/devops-tools.git ~/.local/share/devops-q
+cd ~/.local/share/devops-q
+
+# Jalankan installer
+./install.sh
+```
+
+Atau jika ingin clone ke lokasi sistem (membutuhkan root):
+
+```bash
+# Clone repository ke /opt (membutuhkan root)
+sudo git clone https://github.com/mamatnurahmat/devops-tools.git /opt/devops-q
+sudo chown -R $(whoami):$(whoami) /opt/devops-q
 cd /opt/devops-q
 
 # Jalankan installer
