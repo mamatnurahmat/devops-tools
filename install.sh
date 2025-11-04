@@ -164,14 +164,29 @@ if ! command -v uv &> /dev/null; then
     # Install uv using official installer
     curl -LsSf https://astral.sh/uv/install.sh | sh
     
-    # Add uv to PATH if not already there
+    # Add uv to PATH - check both common locations
+    # uv installer installs to ~/.local/bin or ~/.cargo/bin depending on version
+    if [[ ":$PATH:" != *":${HOME}/.local/bin:"* ]]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+    fi
     if [[ ":$PATH:" != *":${HOME}/.cargo/bin:"* ]]; then
         export PATH="${HOME}/.cargo/bin:${PATH}"
     fi
     
+    # Source env file if exists (uv installer creates this)
+    if [ -f "${HOME}/.local/bin/env" ]; then
+        source "${HOME}/.local/bin/env" 2>/dev/null || true
+    fi
+    
     # Verify uv installation
     if ! command -v uv &> /dev/null; then
-        echo "? Error: Gagal menginstall uv. Silakan install manual dari https://github.com/astral-sh/uv"
+        echo "? Error: Gagal menginstall uv."
+        echo "   uv mungkin terinstall di ${HOME}/.local/bin atau ${HOME}/.cargo/bin"
+        echo "   Silakan tambahkan ke PATH atau install manual dari https://github.com/astral-sh/uv"
+        echo ""
+        echo "   Coba jalankan:"
+        echo "   export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+        echo "   export PATH=\"\${HOME}/.cargo/bin:\${PATH}\""
         exit 1
     fi
     
@@ -185,8 +200,14 @@ echo ""
 echo "?? Menginstall dependencies dengan uv..."
 echo "   Working directory: $(pwd)"
 
-# Install project dependencies (user-level, tidak perlu --system)
-uv pip install -q -e .
+# Install project dependencies dengan --system flag untuk non-root user
+# --system installs to user site-packages (~/.local/lib/python3.x/site-packages)
+uv pip install --system -q -e . || {
+    echo "?? Error: Gagal menginstall dependencies"
+    echo "   Pastikan uv sudah terinstall dan tersedia di PATH"
+    echo "   Coba jalankan: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+    exit 1
+}
 
 echo "? Dependencies terinstall"
 
@@ -194,22 +215,15 @@ echo "? Dependencies terinstall"
 mkdir -p "${INSTALL_DIR}"
 echo "? Directory ${INSTALL_DIR} siap"
 
-# Create wrapper script menggunakan uv run
+# Create wrapper script menggunakan python langsung (package sudah diinstall di user site-packages)
 WRAPPER_SCRIPT="${INSTALL_DIR}/${BIN_NAME}"
 cat > "${WRAPPER_SCRIPT}" << 'EOF'
 #!/usr/bin/env bash
 # DevOps Q CLI Wrapper
-# Menggunakan uv untuk menjalankan CLI dengan environment yang terisolasi
+# Package sudah diinstall di user site-packages dengan --system flag
+# Jadi bisa langsung menggunakan python3 tanpa perlu uv run
 
-# Check if uv is available
-if command -v uv &> /dev/null; then
-    # Use uv run to execute doq module directly
-    # Package is already installed via 'uv pip install -e .', so we can run it directly
-    uv run python -m doq "$@"
-else
-    # Fallback to direct python execution
-    python3 -m doq "$@"
-fi
+python3 -m doq "$@"
 EOF
 
 chmod +x "${WRAPPER_SCRIPT}"
