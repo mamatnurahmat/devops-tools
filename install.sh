@@ -5,13 +5,130 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Default values
+REPO_URL="${REPO_URL:-https://github.com/mamatnurahmat/devops-tools}"
+REPO_REF="${REPO_REF:-main}"
+PREFIX="${PREFIX:-/opt/devops-q}"
 INSTALL_DIR="${HOME}/.local/bin"
 BIN_NAME="doq"
+SKIP_CLONE="${SKIP_CLONE:-}"
+
+# Parse arguments
+YES_FLAG=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --yes)
+            YES_FLAG="yes"
+            shift
+            ;;
+        --repo)
+            REPO_URL="$2"
+            shift 2
+            ;;
+        --ref)
+            REPO_REF="$2"
+            shift 2
+            ;;
+        --prefix)
+            PREFIX="$2"
+            shift 2
+            ;;
+        --skip-clone)
+            SKIP_CLONE="yes"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--yes] [--repo URL] [--ref BRANCH] [--prefix DIR] [--skip-clone]"
+            exit 1
+            ;;
+    esac
+done
 
 echo "?? DevOps Q Installer"
 echo "=========================="
 echo ""
+
+# Detect if running from stdin (pipe mode)
+IS_PIPE_MODE=false
+if [ -t 0 ]; then
+    # Running from terminal (not pipe)
+    IS_PIPE_MODE=false
+else
+    # Running from pipe
+    IS_PIPE_MODE=true
+fi
+
+# Detect if we're in a project directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || pwd)"
+if [ -f "${SCRIPT_DIR}/pyproject.toml" ]; then
+    PROJECT_DIR="${SCRIPT_DIR}"
+elif [ -f "./pyproject.toml" ]; then
+    PROJECT_DIR="$(pwd)"
+else
+    PROJECT_DIR=""
+fi
+
+# Auto-clone if needed
+if [ -z "$PROJECT_DIR" ] && [ -z "$SKIP_CLONE" ]; then
+    echo "?? Tidak menemukan pyproject.toml di direktori saat ini"
+    
+    if [ "$IS_PIPE_MODE" = true ] || [ "$YES_FLAG" = "yes" ]; then
+        echo "?? Meng-clone repository ke ${PREFIX}..."
+        echo "   Repository: ${REPO_URL}"
+        echo "   Branch/Ref: ${REPO_REF}"
+        
+        # Create parent directory if it doesn't exist
+        mkdir -p "$(dirname "${PREFIX}")"
+        
+        # Clone repository
+        if [ -d "${PREFIX}" ]; then
+            if [ "$YES_FLAG" = "yes" ]; then
+                echo "?? Directory ${PREFIX} sudah ada, melakukan update..."
+                cd "${PREFIX}"
+                git fetch origin "${REPO_REF}" || true
+                git checkout "${REPO_REF}" || true
+            else
+                echo "?? Error: Directory ${PREFIX} sudah ada"
+                echo "   Gunakan --yes untuk update, atau hapus direktori tersebut terlebih dahulu"
+                exit 1
+            fi
+        else
+            git clone --branch "${REPO_REF}" --single-branch "${REPO_URL}" "${PREFIX}" || {
+                echo "?? Error: Gagal meng-clone repository"
+                exit 1
+            }
+        fi
+        
+        PROJECT_DIR="${PREFIX}"
+        cd "${PROJECT_DIR}"
+    else
+        echo ""
+        echo "?? Perlu clone repository terlebih dahulu."
+        echo ""
+        echo "Pilihan:"
+        echo "1. Clone repository manual:"
+        echo "   git clone ${REPO_URL} ${PREFIX}"
+        echo "   cd ${PREFIX}"
+        echo "   ./install.sh"
+        echo ""
+        echo "2. Atau jalankan installer dengan --yes untuk auto-clone:"
+        echo "   curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/${REPO_REF}/install.sh | bash -s -- --yes"
+        echo ""
+        echo "3. Atau gunakan opsi kustom:"
+        echo "   curl -fsSL ... | bash -s -- --yes --repo ${REPO_URL} --ref ${REPO_REF} --prefix ${PREFIX}"
+        exit 1
+    fi
+elif [ -n "$PROJECT_DIR" ]; then
+    echo "?? Menggunakan project directory: ${PROJECT_DIR}"
+    cd "${PROJECT_DIR}"
+fi
+
+# Verify pyproject.toml exists
+if [ ! -f "pyproject.toml" ]; then
+    echo "?? Error: pyproject.toml tidak ditemukan di ${PROJECT_DIR}"
+    exit 1
+fi
 
 # Check Python
 if ! command -v python3 &> /dev/null; then
@@ -48,7 +165,7 @@ fi
 # Install dependencies menggunakan uv
 echo ""
 echo "?? Menginstall dependencies dengan uv..."
-cd "${SCRIPT_DIR}"
+echo "   Working directory: $(pwd)"
 
 # Install project dependencies (user-level, tidak perlu --system)
 uv pip install -q -e .
@@ -82,13 +199,12 @@ echo "? Wrapper script dibuat: ${WRAPPER_SCRIPT}"
 
 # Save current commit hash to version file
 if command -v git &> /dev/null; then
-    cd "${SCRIPT_DIR}"
     if git rev-parse --git-dir > /dev/null 2>&1; then
         CURRENT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
         python3 << EOF
 import sys
 import os
-sys.path.insert(0, "${SCRIPT_DIR}")
+sys.path.insert(0, "${PROJECT_DIR}")
 from version import save_version
 save_version("${CURRENT_COMMIT}")
 EOF
