@@ -45,19 +45,25 @@ def get_version():
         }
 
 
-def save_version(commit_hash):
+def save_version(commit_hash, branch=None):
     """Save version information to file.
     
     Args:
         commit_hash: Git commit hash to save
+        branch: Branch name (optional, will preserve current if not provided)
     """
     ensure_version_dir()
+    
+    # Get current version to preserve branch if not specified
+    if branch is None:
+        current_version = get_version()
+        branch = current_version.get('branch', REPO_BRANCH)
     
     version_info = {
         'commit_hash': commit_hash,
         'installed_at': datetime.now(timezone.utc).isoformat(),
         'repo_url': REPO_URL,
-        'branch': REPO_BRANCH
+        'branch': branch
     }
     
     try:
@@ -67,17 +73,25 @@ def save_version(commit_hash):
         print(f"Warning: Could not save version info: {e}")
 
 
-def get_latest_commit_hash():
+def get_latest_commit_hash(branch=None):
     """Get latest commit hash from remote repository.
     
     Uses git ls-remote to get the latest commit hash without cloning.
     
+    Args:
+        branch: Branch name (optional, will use current version's branch if not provided)
+    
     Returns:
         str: Latest commit hash or None if failed
     """
+    # If branch not specified, get from current version
+    if branch is None:
+        current_version = get_version()
+        branch = current_version.get('branch', REPO_BRANCH)
+    
     try:
         result = subprocess.run(
-            ['git', 'ls-remote', REPO_URL, f'refs/heads/{REPO_BRANCH}'],
+            ['git', 'ls-remote', REPO_URL, f'refs/heads/{branch}'],
             capture_output=True,
             text=True,
             timeout=30

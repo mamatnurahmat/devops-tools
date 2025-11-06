@@ -909,8 +909,10 @@ doq get-cicd saas-apigateway develop --json
 
 ### Update Management
 - `doq check-update` - Cek update tersedia
-- `doq update` - Update ke versi terbaru
+- `doq update` - Update ke versi terbaru (dari branch di version.json)
+- `doq update --branch <branch>` - Update ke versi terbaru dari branch tertentu
 - `doq update <commit>` - Update ke commit tertentu
+- `doq update <commit> --branch <branch>` - Update ke commit dari branch tertentu
 - `doq version` - Tampilkan versi terinstall
 
 ### Configuration

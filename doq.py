@@ -1144,27 +1144,35 @@ def cmd_update(args):
     import tempfile
     from pathlib import Path
     
-    repo_url = "https://github.com/mamatnurahmat/devops-tools"
-    branch = "main"
+    # Get current version info
+    current_version = get_version()
+    repo_url = current_version.get('repo_url', "https://github.com/mamatnurahmat/devops-tools")
+    
+    # Determine branch: CLI arg > version.json > default "main"
+    if args.branch:
+        branch = args.branch
+        print(f"🔀 Using branch from CLI argument: {branch}")
+    else:
+        branch = current_version.get('branch', "main")
+        print(f"🔀 Using branch from version.json: {branch}")
     
     # Determine commit hash
     if args.latest:
-        commit_hash = get_latest_commit_hash()
+        commit_hash = get_latest_commit_hash(branch)
         if not commit_hash:
-            print("Error: Tidak dapat mengambil latest commit hash dari repository", file=sys.stderr)
+            print(f"Error: Tidak dapat mengambil latest commit hash dari branch '{branch}'", file=sys.stderr)
             sys.exit(1)
     elif args.commit_hash:
         commit_hash = args.commit_hash
     else:
         # If no commit hash provided, check current version and update to latest
-        print("?? Checking current version...")
-        current_version = get_version()
+        print("🔍 Checking current version...")
         current_hash = current_version.get('commit_hash', 'unknown')
         
-        # Get latest commit hash
-        latest_hash = get_latest_commit_hash()
+        # Get latest commit hash from the specified branch
+        latest_hash = get_latest_commit_hash(branch)
         if not latest_hash:
-            print("Error: Tidak dapat mengambil latest commit hash dari repository", file=sys.stderr)
+            print(f"Error: Tidak dapat mengambil latest commit hash dari branch '{branch}'", file=sys.stderr)
             sys.exit(1)
         
         # Compare with current version
@@ -1244,12 +1252,13 @@ def cmd_update(args):
             print(f"\nError running installer (exit code: {result.returncode})", file=sys.stderr)
             sys.exit(1)
         
-        # Save version after successful update
-        save_version(commit_hash)
+        # Save version after successful update (preserve branch)
+        save_version(commit_hash, branch)
         
         print("\n" + "=" * 50)
         print("? Update completed successfully!")
-        print(f"   Updated to commit: {commit_hash}")
+        print(f"   Branch: {branch}")
+        print(f"   Commit: {commit_hash}")
         
     except KeyboardInterrupt:
         print("\n\nUpdate cancelled by user", file=sys.stderr)
@@ -1515,11 +1524,14 @@ def main():
     update_parser = subparsers.add_parser('update', 
                                           help='Update DevOps Q from GitHub repository',
                                           description='Update DevOps Q to latest version or specific commit. '
-                                                    'If no commit hash is provided, will update to latest commit from main branch.')
+                                                    'By default uses branch from version.json, or specify with --branch.')
     update_parser.add_argument('commit_hash', nargs='?', 
                               help='Git commit hash to update to (optional, defaults to latest if not provided)')
     update_parser.add_argument('--latest', action='store_true', 
                               help='Update to latest commit from repository (same as running without arguments)')
+
+    update_parser.add_argument('--branch', type=str, default=None,
+                              help='Branch to update from (default: use branch from version.json)')
     update_parser.set_defaults(func=cmd_update)
     
     # Version command
