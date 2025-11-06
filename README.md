@@ -454,14 +454,350 @@ Informasi yang ditampilkan:
 - Update akan menggunakan `uv` package manager untuk instalasi yang lebih cepat
 - Version tracking berbasis commit hash memastikan update berdasarkan commit yang tepat
 
+## DevOps CI/CD - Docker Image Builder
+
+DevOps Q sekarang terintegrasi dengan Docker image builder untuk build otomatis dari Bitbucket repositories dengan fitur SBOM, provenance attestation, dan resource management.
+
+> 📖 **Detailed Documentation**: Lihat [DEVOPS-CI.md](DEVOPS-CI.md) untuk comprehensive guide dengan contoh lengkap
+
+### Requirements
+
+- Docker dan Docker Buildx terinstall
+- Git terinstall
+- File authentication di `~/.doq/auth.json` dengan format:
+```json
+{
+  "BITBUCKET_USER": "your-username",
+  "BITBUCKET_TOKEN": "your-token",
+  "GITHUB_USER": "your-github-username",
+  "GITHUB_TOKEN": "your-github-token",
+  "GITUSERTOKEN": "your-git-token"
+}
+```
+
+### Basic Usage
+
+Build Docker image dari repository:
+
+```bash
+doq devops-ci <REPO> <REFS>
+```
+
+Contoh:
+
+```bash
+# Build dari branch develop
+doq devops-ci saas-be-core develop
+
+# Build dari tag
+doq devops-ci saas-apigateway v1.2.0
+
+# Build dari branch main
+doq devops-ci saas-fe main
+```
+
+### Advanced Options
+
+#### Force Rebuild
+
+Force rebuild meskipun image sudah ada:
+
+```bash
+doq devops-ci saas-be-core develop --rebuild
+```
+
+#### Custom Image Name
+
+Override nama/tag image:
+
+```bash
+doq devops-ci saas-be-core develop --rebuild loyaltolpi/saas-be-core:dev-123
+```
+
+#### Output Modes
+
+**Default Mode** - Progress lengkap dengan emoji:
+```bash
+doq devops-ci saas-be-core develop
+```
+
+**JSON Mode** - Progress + JSON result di akhir (untuk automation):
+```bash
+doq devops-ci saas-be-core develop --json
+```
+
+Parse JSON dari output:
+```bash
+doq devops-ci saas-be-core develop --json | tee build.log
+grep "BUILD RESULT" build.log -A 5 | grep '^{' | jq .
+```
+
+**Short Mode** - Silent, hanya output nama image (untuk scripting):
+```bash
+IMAGE=$(doq devops-ci saas-be-core develop --short)
+echo "Built: $IMAGE"
+```
+
+### Environment Variables
+
+#### Resource Limits
+```bash
+# Custom memory dan CPU
+DEFAULT_MEMORY=4g DEFAULT_CPUS=2 doq devops-ci saas-be-core develop
+
+# CPU quota dan period
+DEFAULT_CPU_PERIOD=100000 DEFAULT_CPU_QUOTA=200000 doq devops-ci saas-be-core develop
+```
+
+#### API Configuration
+```bash
+# Custom API endpoint
+DEFAULT_URL_API=http://custom-api:5000 doq devops-ci saas-be-core develop
+```
+
+#### Notification
+```bash
+# Custom ntfy.sh URL
+NTFY_URL=https://ntfy.sh/my-custom-topic doq devops-ci saas-be-core develop
+```
+
+### Features
+
+✅ **Multi-platform Build Support** - Build untuk berbagai platform/arsitektur  
+✅ **SBOM Generation** - Software Bill of Materials untuk security compliance  
+✅ **Provenance Attestation** - Cryptographic attestation untuk supply chain security  
+✅ **Resource Management** - CPU dan memory limits untuk builder container (default: 4 CPUs, 4GB RAM)  
+✅ **Auto Image Caching** - Skip build jika image sudah ready  
+✅ **Git Submodule Workaround** - Pre-clone dengan `--no-recurse-submodules` untuk menghindari error submodule  
+✅ **Real-time Notifications** - Kirim status build ke ntfy.sh otomatis  
+✅ **Buildx Permission Fix** - Auto-fix permission issues di Docker buildx directory  
+
+### Build Process
+
+1. **Fetch Metadata** - Ambil metadata build dari API
+2. **Check Image Status** - Cek apakah image sudah ready (skip jika sudah ada, kecuali --rebuild)
+3. **Fetch Configuration** - Load `cicd/cicd.json` dari repository
+4. **Load Authentication** - Baca credentials dari `~/.doq/auth.json`
+5. **Setup Builder** - Setup/verify Docker buildx builder dengan resource limits
+6. **Pre-clone Repository** - Clone dengan `--no-recurse-submodules` untuk avoid error
+7. **Execute Build** - Run docker buildx dengan SBOM dan provenance
+8. **Push Image** - Push ke registry otomatis
+9. **Send Notification** - Kirim build result ke ntfy.sh
+
+### Build Result (JSON)
+
+Contoh JSON output dengan `--json`:
+
+```json
+{
+  "status": "success",
+  "repository": "saas-be-core",
+  "branch": "develop",
+  "image": "loyaltolpi/saas-be-core:develop-abc123",
+  "rebuild": false,
+  "build_time": {
+    "start_unix": 1704067200,
+    "end_unix": 1704067800,
+    "start_iso": "2024-01-01T00:00:00Z",
+    "end_iso": "2024-01-01T00:10:00Z",
+    "duration": {
+      "seconds": 600,
+      "formatted": "10m 0s"
+    }
+  },
+  "config": {
+    "memory": "2g",
+    "cpus": "1",
+    "cpu_period": "100000",
+    "cpu_quota": "100000",
+    "builder": "container-builder"
+  },
+  "metadata": {
+    "ready": false,
+    "custom_image": "",
+    "api_url": "http://193.1.1.3:5000"
+  },
+  "error": "",
+  "timestamp": "2024-01-01T00:10:00Z"
+}
+```
+
+### Troubleshooting
+
+#### Permission Issues
+Script otomatis fix permission issues di `~/.docker/buildx`:
+- Activity directory permissions
+- Refs directory permissions  
+- Root-owned files dari previous builds
+
+#### Git Submodule Errors
+Build menggunakan pre-clone approach dengan `--no-recurse-submodules` untuk menghindari error:
+```
+fatal: No url found for submodule path '...' in .gitmodules
+```
+
+#### Builder Not Found
+Script otomatis create builder `container-builder` jika belum ada dengan konfigurasi:
+- Driver: docker-container
+- Metrics: enabled (port 9333)
+- Resource limits: 4 CPUs, 4GB RAM
+
+### Help
+
+Untuk detail lengkap tentang DevOps CI:
+
+```bash
+doq devops-ci --help
+```
+
+Show versi:
+
+```bash
+doq devops-ci --version
+```
+
+## Helper Mode - No API Dependency
+
+DevOps CI mendukung **dual mode**: API mode (default) dan Helper mode (no API dependency).
+
+### Kenapa Helper Mode?
+
+Helper mode berguna ketika:
+- Tidak ada akses ke API eksternal
+- Development/testing di local environment
+- Custom workflow tanpa dependency pada API metadata
+- Portability - bisa jalan dimana saja
+
+### Mode Configuration
+
+#### Via Environment Variable:
+```bash
+export DEVOPS_CI_MODE=helper  # atau "api" untuk default
+doq devops-ci saas-be-core develop
+```
+
+#### Via Config File `~/.doq/.env`:
+```bash
+# DevOps CI Mode
+DEVOPS_CI_MODE=helper
+
+# Helper Mode Settings
+HELPER_IMAGE_TEMPLATE=loyaltolpi/{repo}:{refs}-{timestamp}
+HELPER_REGISTRY01=registry.example.com
+HELPER_DEFAULT_PORT=3000
+HELPER_DEFAULT_PORT2=
+```
+
+#### Via Config File `~/.doq/helper-config.json`:
+```json
+{
+  "mode": "helper",
+  "image_template": "loyaltolpi/{repo}:{refs}-{timestamp}",
+  "registry01": "registry.example.com",
+  "default_port": "3000",
+  "default_port2": ""
+}
+```
+
+### Usage Examples
+
+#### API Mode (Default):
+```bash
+# Default: fetch metadata dari API
+doq devops-ci saas-be-core develop
+
+# Output:
+# 🌐 Running in API MODE
+# 📦 Fetching build metadata...
+```
+
+#### Helper Mode via CLI Flag:
+```bash
+# Force helper mode dengan --helper flag
+doq devops-ci saas-be-core develop --helper
+
+# Output:
+# 🔧 Running in HELPER MODE (no API dependency)
+# 🔧 Helper mode: Generating metadata locally...
+```
+
+#### Helper Mode dengan Custom Settings:
+```bash
+# Helper mode dengan custom image name
+doq devops-ci saas-be-core develop --helper \
+  --image-name loyaltolpi/saas-be-core:test-20240101
+
+# Helper mode dengan registry dan port
+doq devops-ci saas-be-core develop --helper \
+  --registry registry.example.com \
+  --port 8080
+```
+
+#### Helper Mode via Config:
+```bash
+# Set DEVOPS_CI_MODE=helper di ~/.doq/.env
+# Kemudian jalankan tanpa flag --helper
+doq devops-ci saas-be-core develop
+
+# Output:
+# 🔧 Running in HELPER MODE (no API dependency)
+```
+
+### Image Name Template
+
+Template variables yang didukung:
+- `{repo}` - Repository name
+- `{refs}` - Branch/tag name
+- `{timestamp}` - Current timestamp (YYYYMMDDHHmmss)
+- `{short_hash}` - Git short hash (jika tersedia)
+
+Contoh template:
+```bash
+HELPER_IMAGE_TEMPLATE=loyaltolpi/{repo}:{refs}-{timestamp}
+# Hasil: loyaltolpi/saas-be-core:develop-20240615143022
+
+HELPER_IMAGE_TEMPLATE=registry.io/{repo}:latest
+# Hasil: registry.io/saas-be-core:latest
+```
+
+### Configuration Priority
+
+Settings di-load dengan priority (tertinggi ke terendah):
+1. **CLI arguments** (`--image-name`, `--registry`, `--port`)
+2. **Environment variables** (`HELPER_IMAGE_TEMPLATE`, `HELPER_REGISTRY01`, etc.)
+3. **~/.doq/.env** file
+4. **~/.doq/helper-config.json** file
+5. **Default values**
+
+### Comparison: API Mode vs Helper Mode
+
+| Feature | API Mode | Helper Mode |
+|---------|----------|-------------|
+| **API Dependency** | ✅ Required | ❌ Not required |
+| **Auto Skip if Ready** | ✅ Yes | ❌ No (always build) |
+| **Config Source** | API endpoint | Local config files |
+| **Image Name** | From API metadata | From template/custom |
+| **Use Case** | Production CI/CD | Development/Testing |
+
+### Best Practices
+
+1. **Production**: Use API mode untuk consistency dan auto-skip capability
+2. **Development**: Use helper mode untuk flexibility dan no external dependency
+3. **Config Files**: Gunakan `~/.doq/.env` untuk consistency dengan `auth.json`
+4. **CLI Override**: Gunakan CLI args untuk quick testing atau one-time builds
+
 ## Struktur File
 
 - `doq.py` - Main CLI entry point
 - `rancher_api.py` - Rancher API client
 - `config.py` - Configuration management
 - `version.py` - Version tracking dan update management
+- `devops_ci.py` - DevOps CI/CD Docker image builder
 - `pyproject.toml` - Project configuration untuk uv package manager
 - `install.sh` - Installer script menggunakan uv
+- `README.md` - Main documentation
+- `DEVOPS-CI.md` - Comprehensive DevOps CI documentation
+- `UPDATE_GUIDE.md` - Update management guide
 
 ## Package Manager
 
@@ -473,6 +809,69 @@ DevOps Q menggunakan `uv` sebagai package manager. Keuntungan menggunakan `uv`:
 - **Auto-install**: Installer script akan otomatis menginstall uv jika belum tersedia
 
 Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersedia di sistem Anda.
+
+## DevOps Utilities
+
+### Check Docker Image Status
+
+Command `doq images` memungkinkan Anda untuk mengecek apakah Docker image sudah tersedia di Docker Hub:
+
+```bash
+# Check image status
+doq images saas-apigateway develop
+
+# Output dengan JSON format
+doq images saas-apigateway develop --json
+```
+
+**Output Example:**
+```json
+{
+  "repository": "saas-apigateway",
+  "reference": "develop",
+  "image": "loyaltolpi/saas-apigateway:a1b2c3d",
+  "ready": true,
+  "status": "ready"
+}
+```
+
+**With `--json` flag (compact format):**
+```json
+{
+  "ready": true,
+  "image": "loyaltolpi/saas-apigateway:a1b2c3d",
+  "build-image": null
+}
+```
+
+### Get cicd.json Configuration
+
+Command `doq get-cicd` memungkinkan Anda untuk fetch file `cicd/cicd.json` langsung dari Bitbucket repository:
+
+```bash
+# Fetch cicd.json
+doq get-cicd saas-apigateway develop
+
+# Output compact JSON
+doq get-cicd saas-apigateway develop --json
+```
+
+**Output Example:**
+```
+📦 cicd.json for saas-apigateway/develop:
+
+{
+  "IMAGE": "saas-apigateway",
+  "BUILD": "docker",
+  "PORT": "3000"
+}
+```
+
+**Features:**
+- ✅ No API dependency (direct Bitbucket access)
+- ✅ Supports all branches and tags
+- ✅ Automatic authentication via `~/.doq/auth.json`
+- ✅ JSON output untuk scripting
 
 ## Quick Reference
 
@@ -492,6 +891,21 @@ Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersed
 - `doq get-svc <ns> <svc>` - Get service resource (JSON)
 - `doq get-cm <ns> <cm>` - Get configmap resource (JSON)
 - `doq get-secret <ns> <secret>` - Get secret resource dengan base64 decoded (JSON)
+
+### DevOps CI/CD - Docker Image Builder
+- `doq devops-ci <repo> <refs>` - Build Docker image dari repository (API mode)
+- `doq devops-ci <repo> <refs> --helper` - Build dengan helper mode (no API dependency)
+- `doq devops-ci <repo> <refs> --rebuild` - Force rebuild image
+- `doq devops-ci <repo> <refs> --json` - Build dengan JSON output
+- `doq devops-ci <repo> <refs> --short` - Build silent mode (output image name only)
+- `doq devops-ci <repo> <refs> --helper --image-name <name>` - Helper mode dengan custom image
+- `doq devops-ci <repo> <refs> <custom-image>` - Build dengan custom image name
+
+### DevOps Utilities
+- `doq images <repo> <refs>` - Check Docker image status in Docker Hub
+- `doq images <repo> <refs> --json` - Check image status (JSON output)
+- `doq get-cicd <repo> <refs>` - Fetch cicd.json from Bitbucket repository
+- `doq get-cicd <repo> <refs> --json` - Fetch cicd.json (compact JSON)
 
 ### Update Management
 - `doq check-update` - Cek update tersedia

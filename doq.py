@@ -3,9 +3,19 @@
 import argparse
 import getpass
 import sys
+import json
 from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
+from devops_ci import (
+    DevOpsCIBuilder, 
+    show_help as devops_ci_help, 
+    show_version as devops_ci_version,
+    load_auth_file,
+    fetch_bitbucket_file,
+    get_commit_hash_from_bitbucket,
+    check_docker_image_exists
+)
 
 
 def print_table(headers, rows):
@@ -1306,6 +1316,163 @@ def cmd_config(args):
         print(f"Insecure: {config['insecure']}")
 
 
+def cmd_devops_ci(args):
+    """Build Docker images using DevOps CI/CD tool."""
+    # Handle --help
+    if hasattr(args, 'help_devops_ci') and args.help_devops_ci:
+        devops_ci_help()
+        sys.exit(0)
+    
+    # Handle --version
+    if hasattr(args, 'version_devops_ci') and args.version_devops_ci:
+        devops_ci_version()
+        sys.exit(0)
+    
+    # Validate required arguments
+    if not args.repo:
+        print("❌ Error: Repository name is required", file=sys.stderr)
+        print("   Usage: doq devops-ci <REPO> <REFS> [--rebuild] [CUSTOM_IMAGE]", file=sys.stderr)
+        print("   Example: doq devops-ci saas-be-core develop", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("   Use 'doq devops-ci --help' for more information", file=sys.stderr)
+        sys.exit(1)
+    
+    if not args.refs:
+        print("❌ Error: Branch/tag name is required", file=sys.stderr)
+        print(f"   Usage: doq devops-ci {args.repo} <REFS> [--rebuild] [CUSTOM_IMAGE]", file=sys.stderr)
+        print(f"   Example: doq devops-ci {args.repo} develop", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("   Use 'doq devops-ci --help' for more information", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validate repository name format
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', args.repo):
+        print(f"❌ Error: Invalid repository name '{args.repo}'", file=sys.stderr)
+        print("   Repository name should contain only letters, numbers, hyphens, and underscores", file=sys.stderr)
+        sys.exit(1)
+    
+    # Prepare helper args if helper mode is enabled
+    helper_args = {}
+    if args.helper:
+        if args.image_name:
+            helper_args["image_name"] = args.image_name
+        if args.registry:
+            helper_args["registry"] = args.registry
+        if args.port:
+            helper_args["port"] = args.port
+    
+    # Create builder and execute
+    try:
+        builder = DevOpsCIBuilder(
+            repo=args.repo,
+            refs=args.refs,
+            rebuild=args.rebuild,
+            json_output=args.json,
+            short_output=args.short,
+            custom_image=args.custom_image or "",
+            helper_mode=args.helper,
+            helper_args=helper_args
+        )
+        
+        exit_code = builder.build()
+        sys.exit(exit_code)
+    
+    except KeyboardInterrupt:
+        print("\n\n❌ Build cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_images(args):
+    """Check Docker image status."""
+    try:
+        # Load auth
+        auth_data = load_auth_file()
+        
+        # Get cicd.json to find IMAGE name
+        try:
+            cicd_content = fetch_bitbucket_file(args.repo, args.refs, "cicd/cicd.json", auth_data)
+            cicd_data = json.loads(cicd_content)
+            image_name = cicd_data.get('IMAGE', args.repo)
+        except Exception:
+            # If cicd.json not found, use repo name
+            image_name = args.repo
+        
+        # Get commit hash
+        commit_info = get_commit_hash_from_bitbucket(args.repo, args.refs, auth_data)
+        
+        # Build full image name
+        if commit_info['ref_type'] == 'tag':
+            tag_version = args.refs
+        else:
+            tag_version = commit_info['short_hash']
+        
+        full_image = f"loyaltolpi/{image_name}:{tag_version}"
+        
+        # Check if image exists in Docker Hub (with verbose output)
+        exists = check_docker_image_exists(full_image, auth_data, verbose=True)
+        
+        # Output results
+        if args.json:
+            result = {
+                'ready': exists,
+                'image': full_image if exists else None,
+                'build-image': full_image if not exists else None
+            }
+            print(json.dumps(result, indent=2))
+        else:
+            # Pretty JSON-like output
+            print(json.dumps({
+                'repository': args.repo,
+                'reference': args.refs,
+                'image': full_image,
+                'ready': exists,
+                'status': 'ready' if exists else 'not-ready'
+            }, indent=2))
+        
+        sys.exit(0 if exists else 1)
+    
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        print("   Run 'doq login' to configure authentication", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_get_cicd(args):
+    """Get cicd.json from repository."""
+    try:
+        # Load auth
+        auth_data = load_auth_file()
+        
+        # Fetch cicd.json
+        cicd_content = fetch_bitbucket_file(args.repo, args.refs, "cicd/cicd.json", auth_data)
+        cicd_data = json.loads(cicd_content)
+        
+        # Output results
+        if args.json:
+            print(json.dumps(cicd_data, indent=2))
+        else:
+            print(f"📦 cicd.json for {args.repo}/{args.refs}:")
+            print()
+            print(json.dumps(cicd_data, indent=2))
+        
+        sys.exit(0)
+    
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        print("   Run 'doq login' to configure authentication", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -1463,6 +1630,54 @@ def main():
     kubeconfig_parser.add_argument('--set-context', action='store_true',
                                     help='Set as current context after saving')
     kubeconfig_parser.set_defaults(func=cmd_kube_config, flatten=True)
+    
+    # DevOps CI/CD command
+    devops_ci_parser = subparsers.add_parser('devops-ci', 
+                                             help='Build Docker images from repositories',
+                                             description='Build Docker images from Bitbucket repositories using buildx with SBOM and provenance support')
+    devops_ci_parser.add_argument('repo', nargs='?', help='Repository name (e.g., saas-be-core, saas-apigateway)')
+    devops_ci_parser.add_argument('refs', nargs='?', help='Branch or tag name (e.g., develop, main, v1.0.0)')
+    devops_ci_parser.add_argument('custom_image', nargs='?', default='',
+                                   help='(Optional) Custom image name/tag to override default')
+    devops_ci_parser.add_argument('--rebuild', action='store_true',
+                                   help='Force rebuild even if image already exists')
+    devops_ci_parser.add_argument('--json', action='store_true',
+                                   help='Show build progress + JSON result at end')
+    devops_ci_parser.add_argument('--short', action='store_true',
+                                   help='Silent build, output only image name')
+    devops_ci_parser.add_argument('--helper', action='store_true',
+                                   help='Use helper mode (no API dependency)')
+    devops_ci_parser.add_argument('--image-name',
+                                   help='(Helper mode) Custom image name to build')
+    devops_ci_parser.add_argument('--registry',
+                                   help='(Helper mode) Registry URL for build args')
+    devops_ci_parser.add_argument('--port',
+                                   help='(Helper mode) Application port for build args')
+    devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
+                                   help='Show detailed DevOps CI help')
+    devops_ci_parser.add_argument('--version-devops-ci', action='store_true',
+                                   help='Show DevOps CI version')
+    devops_ci_parser.set_defaults(func=cmd_devops_ci)
+    
+    # Images command - check Docker image status
+    images_parser = subparsers.add_parser('images',
+                                          help='Check Docker image status in Docker Hub',
+                                          description='Check if a Docker image exists in Docker Hub for the given repository and branch/tag')
+    images_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
+    images_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
+    images_parser.add_argument('--json', action='store_true',
+                               help='Output in JSON format')
+    images_parser.set_defaults(func=cmd_images)
+    
+    # Get-cicd command - fetch cicd.json from Bitbucket
+    get_cicd_parser = subparsers.add_parser('get-cicd',
+                                            help='Get cicd.json from Bitbucket repository',
+                                            description='Fetch and display the cicd.json configuration file from a Bitbucket repository')
+    get_cicd_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
+    get_cicd_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
+    get_cicd_parser.add_argument('--json', action='store_true',
+                                 help='Output in compact JSON format (default is pretty-printed)')
+    get_cicd_parser.set_defaults(func=cmd_get_cicd)
     
     args = parser.parse_args()
     

@@ -29,9 +29,13 @@ if ! command -v uv &> /dev/null; then
     # Install uv using official installer
     curl -LsSf https://astral.sh/uv/install.sh | sh
     
-    # Add uv to PATH if not already there
+    # Add possible uv installation paths to PATH
+    # uv can be installed in ~/.cargo/bin or ~/.local/bin
     if [[ ":$PATH:" != *":${HOME}/.cargo/bin:"* ]]; then
         export PATH="${HOME}/.cargo/bin:${PATH}"
+    fi
+    if [[ ":$PATH:" != *":${HOME}/.local/bin:"* ]]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
     fi
     
     # Verify uv installation

@@ -9,6 +9,7 @@ authors = [
 ]
 dependencies = [
     "requests>=2.31.0",
+    "urllib3<2.0",
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
 ]
@@ -26,6 +27,7 @@ only-include = [
     "rancher_api.py",
     "config.py",
     "version.py",
+    "devops_ci.py",
     "README.md",
 ]
 
