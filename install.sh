@@ -54,8 +54,10 @@ echo ""
 echo "?? Menginstall dependencies dengan uv..."
 cd "${SCRIPT_DIR}"
 
-# Install project dependencies to user space (--user flag)
-uv pip install -q --user -e .
+# Use UV_LINK_MODE=copy to avoid permission issues and install to user space
+# uv automatically uses user site-packages when not in a virtual environment
+export UV_LINK_MODE=copy
+uv pip install -q -e .
 
 echo "? Dependencies terinstall"
 
