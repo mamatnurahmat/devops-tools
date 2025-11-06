@@ -1175,25 +1175,36 @@ def cmd_update(args):
             print(f"Error: Tidak dapat mengambil latest commit hash dari branch '{branch}'", file=sys.stderr)
             sys.exit(1)
         
-        # Compare with current version
-        if current_hash != 'unknown' and current_hash == latest_hash:
-            print("? Sudah menggunakan versi terbaru!")
+        # Get current branch for comparison
+        current_branch = current_version.get('branch', 'main')
+        
+        # If switching branch, always update
+        if args.branch and args.branch != current_branch:
+            print(f"\n🔀 Switching branch: {current_branch} → {branch}")
+            print(f"   Latest commit on '{branch}': {latest_hash[:8]}...")
+            print(f"   Will update to new branch...\n")
+            commit_hash = latest_hash
+        # If same branch, compare commit hashes
+        elif current_hash != 'unknown' and current_hash == latest_hash:
+            print("✅ Sudah menggunakan versi terbaru!")
+            print(f"   Branch: {branch}")
             print(f"   Current version: {current_hash[:8]}...")
             print(f"   Latest version:  {latest_hash[:8]}...")
             print(f"   Installed at:    {current_version.get('installed_at', 'unknown')}")
             print("\nTidak ada update yang diperlukan.")
             return
-        
         # Update to latest
-        if current_hash != 'unknown':
-            print(f"\n?? Update tersedia!")
-            print(f"   Current version: {current_hash[:8]}...")
-            print(f"   Latest version:  {latest_hash[:8]}...")
-            print(f"   Will update to latest version...\n")
         else:
-            print(f"\n?? Will update to latest version: {latest_hash[:8]}...\n")
-        
-        commit_hash = latest_hash
+            if current_hash != 'unknown':
+                print(f"\n📢 Update tersedia!")
+                print(f"   Branch: {branch}")
+                print(f"   Current version: {current_hash[:8]}...")
+                print(f"   Latest version:  {latest_hash[:8]}...")
+                print(f"   Will update to latest version...\n")
+            else:
+                print(f"\n📢 Will update to latest version: {latest_hash[:8]}...")
+                print(f"   Branch: {branch}\n")
+            commit_hash = latest_hash
     
     # Check if git is available
     if not shutil.which('git'):
