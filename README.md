@@ -872,6 +872,20 @@ doq get-cicd saas-apigateway develop --json
 - ✅ Supports all branches and tags
 - ✅ Automatic authentication via `~/.doq/auth.json`
 - ✅ JSON output untuk scripting
+- ✅ Auto-build with `--force-build` flag
+
+**Auto-Build Feature:**
+```bash
+# Check and automatically build if not ready
+doq images saas-apigateway develop --force-build
+
+# If image not ready:
+# 1. Shows current status
+# 2. Automatically runs: doq devops-ci saas-apigateway develop
+# 3. Returns build result
+```
+
+This is useful for CI/CD pipelines where you want to ensure image is always available.
 
 ## Quick Reference
 
@@ -904,6 +918,7 @@ doq get-cicd saas-apigateway develop --json
 ### DevOps Utilities
 - `doq images <repo> <refs>` - Check Docker image status in Docker Hub
 - `doq images <repo> <refs> --json` - Check image status (JSON output)
+- `doq images <repo> <refs> --force-build` - Check and auto-build if not ready
 - `doq get-cicd <repo> <refs>` - Fetch cicd.json from Bitbucket repository
 - `doq get-cicd <repo> <refs> --json` - Fetch cicd.json (compact JSON)
 

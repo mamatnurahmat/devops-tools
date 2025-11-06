@@ -1435,7 +1435,41 @@ def cmd_images(args):
         # Check if image exists in Docker Hub (with verbose output)
         exists = check_docker_image_exists(full_image, auth_data, verbose=True)
         
-        # Output results
+        # If image not ready and --force-build specified, trigger build
+        if not exists and args.force_build:
+            # Show current status first
+            if not args.json:
+                print(json.dumps({
+                    'repository': args.repo,
+                    'reference': args.refs,
+                    'image': full_image,
+                    'ready': False,
+                    'status': 'not-ready'
+                }, indent=2))
+            
+            print(f"\n🔨 Image not ready, starting build...")
+            print(f"   Running: doq devops-ci {args.repo} {args.refs}\n")
+            
+            # Import and call devops-ci builder
+            try:
+                builder = DevOpsCIBuilder(
+                    repo=args.repo,
+                    refs=args.refs,
+                    rebuild=False,
+                    json_output=args.json,
+                    short_output=False,
+                    custom_image="",
+                    helper_mode=False,
+                    helper_args={}
+                )
+                
+                exit_code = builder.build()
+                sys.exit(exit_code)
+            except Exception as e:
+                print(f"❌ Build failed: {e}", file=sys.stderr)
+                sys.exit(1)
+        
+        # Output results (normal mode without force-build)
         if args.json:
             result = {
                 'ready': exists,
@@ -1690,6 +1724,8 @@ def main():
     images_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
     images_parser.add_argument('--json', action='store_true',
                                help='Output in JSON format')
+    images_parser.add_argument('--force-build', action='store_true',
+                               help='Automatically build image if not ready')
     images_parser.set_defaults(func=cmd_images)
     
     # Get-cicd command - fetch cicd.json from Bitbucket
