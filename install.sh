@@ -54,8 +54,8 @@ echo ""
 echo "?? Menginstall dependencies dengan uv..."
 cd "${SCRIPT_DIR}"
 
-# Install project dependencies (user-level, tidak perlu --system)
-uv pip install -q -e .
+# Install project dependencies to user space (--user flag)
+uv pip install -q --user -e .
 
 echo "? Dependencies terinstall"
 
