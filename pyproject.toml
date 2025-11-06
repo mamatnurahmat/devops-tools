@@ -27,7 +27,12 @@ only-include = [
     "rancher_api.py",
     "config.py",
     "version.py",
-    "devops_ci.py",
+    "plugin_manager.py",
+    "config_utils.py",
+    "plugins/__init__.py",
+    "plugins/shared_helpers.py",
+    "plugins/devops_ci.py",
+    "plugins/docker_utils.py",
     "README.md",
 ]
 

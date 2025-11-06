@@ -788,16 +788,36 @@ Settings di-load dengan priority (tertinggi ke terendah):
 
 ## Struktur File
 
+### Core Modules
 - `doq.py` - Main CLI entry point
 - `rancher_api.py` - Rancher API client
 - `config.py` - Configuration management
 - `version.py` - Version tracking dan update management
-- `devops_ci.py` - DevOps CI/CD Docker image builder
+
+### Plugin System
+- `plugin_manager.py` - Plugin management and loading system
+- `config_utils.py` - Configuration utilities for plugins
+- `devops_ci.py` - DevOps CI/CD Docker image builder (plugin)
+
+### Configuration
 - `pyproject.toml` - Project configuration untuk uv package manager
 - `install.sh` - Installer script menggunakan uv
+
+### Documentation
 - `README.md` - Main documentation
 - `DEVOPS-CI.md` - Comprehensive DevOps CI documentation
 - `UPDATE_GUIDE.md` - Update management guide
+
+### Configuration Directory (`~/.doq/`)
+```
+~/.doq/
+├── plugins.json           # Plugin registry
+├── plugins/               # Plugin configurations
+│   └── devops-ci.json    # DevOps CI plugin config
+├── auth.json             # Shared authentication
+├── .env                  # Core CLI config
+└── version.json          # Version tracking
+```
 
 ## Package Manager
 
@@ -807,6 +827,165 @@ DevOps Q menggunakan `uv` sebagai package manager. Keuntungan menggunakan `uv`:
 - **Reliable**: Dependency resolution yang lebih baik
 - **Isolated**: Environment management yang lebih baik
 - **Auto-install**: Installer script akan otomatis menginstall uv jika belum tersedia
+
+## Plugin System
+
+DevOps Q menggunakan sistem plugin yang modular dan scalable untuk manajemen fitur.
+
+### Architecture
+
+Plugin system menggunakan:
+- **Plugin Registry** (`~/.doq/plugins.json`) - Daftar semua plugin yang terinstall
+- **Plugin Configs** (`~/.doq/plugins/*.json`) - Konfigurasi per-plugin
+- **Plugin Manager** - Core system untuk load dan manage plugins
+- **Config Utilities** - Centralized config loading dengan priority levels
+
+### Configuration Priority
+
+Untuk setiap setting, priority order adalah:
+1. **CLI Arguments** (highest priority)
+2. **Environment Variables**
+3. **Plugin Config File** (`~/.doq/plugins/<plugin>.json`)
+4. **Hardcoded Defaults** (lowest priority)
+
+### Plugin Management Commands
+
+#### List Plugins
+```bash
+# Show all plugins with status
+doq plugin list
+
+# Example output:
+📦 Installed Plugins:
+======================================================================
+
+  devops-ci (v2.0.1) - ✅ enabled
+  Description: DevOps CI/CD Docker image builder
+  Module: devops_ci
+  Config: plugins/devops-ci.json
+  Commands: devops-ci
+```
+
+#### View Plugin Configuration
+```bash
+# Show plugin config
+doq plugin config devops-ci
+
+# Edit plugin config in $EDITOR
+doq plugin config devops-ci --edit
+```
+
+#### Enable/Disable Plugins
+```bash
+# Disable a plugin
+doq plugin disable devops-ci
+
+# Enable a plugin
+doq plugin enable devops-ci
+```
+
+### DevOps-CI Plugin Configuration
+
+Location: `~/.doq/plugins/devops-ci.json`
+
+```json
+{
+  "mode": "api",
+  "api": {
+    "url": "http://193.1.1.3:5000",
+    "timeout": 30
+  },
+  "builder": {
+    "name": "container-builder",
+    "memory": "2g",
+    "cpus": "1",
+    "cpu_period": "100000",
+    "cpu_quota": "100000"
+  },
+  "registry": {
+    "url": "",
+    "namespace": "loyaltolpi"
+  },
+  "notification": {
+    "ntfy_url": "https://ntfy.sh/doi-notif",
+    "enabled": true
+  },
+  "helper_mode": {
+    "image_template": "loyaltolpi/{repo}:{refs}-{short_hash}",
+    "default_port": "3000",
+    "default_port2": ""
+  },
+  "build_args": {
+    "registry01_url": "",
+    "gitusertoken": "",
+    "bitbucket_user": "",
+    "github_user": "",
+    "bitbucket_token": "",
+    "github_token": ""
+  }
+}
+```
+
+**Configuration Options:**
+
+- `mode`: Operating mode (`"api"` or `"helper"`)
+- `api.url`: API endpoint URL
+- `api.timeout`: API request timeout in seconds
+- `builder.name`: Docker buildx builder name
+- `builder.memory`: Memory limit for builds
+- `builder.cpus`: CPU count for builds
+- `registry.namespace`: Docker registry namespace
+- `notification.ntfy_url`: Notification endpoint
+- `notification.enabled`: Enable/disable notifications
+- `helper_mode.image_template`: Image name template for helper mode
+- `build_args.*`: Build arguments untuk Docker build
+
+### Environment Variable Overrides
+
+You can override any plugin config with environment variables:
+
+```bash
+# Override API URL
+export DEFAULT_URL_API="http://custom-api:5000"
+
+# Override builder resources
+export DEFAULT_MEMORY="4g"
+export DEFAULT_CPUS="2"
+
+# Override notification
+export NTFY_URL="https://ntfy.sh/my-custom-topic"
+
+# Then run commands normally
+doq devops-ci saas-be-core develop
+```
+
+### Adding New Plugins
+
+To add a new plugin to DevOps Q:
+
+1. **Create plugin module** (e.g., `my_plugin.py`)
+2. **Add to plugins.json**:
+```json
+{
+  "name": "my-plugin",
+  "enabled": true,
+  "version": "1.0.0",
+  "module": "my_plugin",
+  "config_file": "plugins/my-plugin.json",
+  "commands": ["my-command"],
+  "description": "My awesome plugin"
+}
+```
+3. **Create plugin config** (`~/.doq/plugins/my-plugin.json`)
+4. **Reload**: `doq plugin list` to verify
+
+### Benefits
+
+✅ **Scalable**: Easy to add new plugins without modifying core CLI  
+✅ **Configurable**: Per-plugin configuration with multiple priority levels  
+✅ **Isolated**: Plugin configs don't interfere with each other  
+✅ **Flexible**: Enable/disable plugins as needed  
+✅ **Maintainable**: Clear separation between core CLI and plugin functionality
 
 Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersedia di sistem Anda.
 
@@ -921,6 +1100,14 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 - `doq images <repo> <refs> --force-build` - Check and auto-build if not ready
 - `doq get-cicd <repo> <refs>` - Fetch cicd.json from Bitbucket repository
 - `doq get-cicd <repo> <refs> --json` - Fetch cicd.json (compact JSON)
+
+### Plugin Management
+- `doq plugin list` - List all installed plugins
+- `doq plugin list --json` - List plugins (JSON output)
+- `doq plugin enable <name>` - Enable a plugin
+- `doq plugin disable <name>` - Disable a plugin
+- `doq plugin config <name>` - Show plugin configuration
+- `doq plugin config <name> --edit` - Edit plugin configuration in $EDITOR
 
 ### Update Management
 - `doq check-update` - Cek update tersedia

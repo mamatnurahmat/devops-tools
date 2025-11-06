@@ -7,15 +7,9 @@ import json
 from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
-from devops_ci import (
-    DevOpsCIBuilder, 
-    show_help as devops_ci_help, 
-    show_version as devops_ci_version,
-    load_auth_file,
-    fetch_bitbucket_file,
-    get_commit_hash_from_bitbucket,
-    check_docker_image_exists
-)
+from plugin_manager import PluginManager
+# Plugins are now loaded dynamically via PluginManager
+# No need to import plugin modules directly
 
 
 def print_table(headers, rows):
@@ -1336,199 +1330,97 @@ def cmd_config(args):
         print(f"Insecure: {config['insecure']}")
 
 
-def cmd_devops_ci(args):
-    """Build Docker images using DevOps CI/CD tool."""
-    # Handle --help
-    if hasattr(args, 'help_devops_ci') and args.help_devops_ci:
-        devops_ci_help()
-        sys.exit(0)
+def cmd_plugin_list(args):
+    """List all plugins and their status."""
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
     
-    # Handle --version
-    if hasattr(args, 'version_devops_ci') and args.version_devops_ci:
-        devops_ci_version()
-        sys.exit(0)
+    plugins = plugin_manager.list_plugins()
     
-    # Validate required arguments
-    if not args.repo:
-        print("❌ Error: Repository name is required", file=sys.stderr)
-        print("   Usage: doq devops-ci <REPO> <REFS> [--rebuild] [CUSTOM_IMAGE]", file=sys.stderr)
-        print("   Example: doq devops-ci saas-be-core develop", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("   Use 'doq devops-ci --help' for more information", file=sys.stderr)
-        sys.exit(1)
+    if not plugins:
+        print("No plugins found.")
+        return
     
-    if not args.refs:
-        print("❌ Error: Branch/tag name is required", file=sys.stderr)
-        print(f"   Usage: doq devops-ci {args.repo} <REFS> [--rebuild] [CUSTOM_IMAGE]", file=sys.stderr)
-        print(f"   Example: doq devops-ci {args.repo} develop", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("   Use 'doq devops-ci --help' for more information", file=sys.stderr)
-        sys.exit(1)
+    if args.json:
+        output = [p.to_dict() for p in plugins]
+        print(json.dumps(output, indent=2))
+    else:
+        print("\n📦 Installed Plugins:")
+        print("=" * 70)
+        for plugin in plugins:
+            status = "✅ enabled" if plugin.enabled else "❌ disabled"
+            print(f"\n  {plugin.name} (v{plugin.version}) - {status}")
+            print(f"  Description: {plugin.description}")
+            print(f"  Module: {plugin.module}")
+            print(f"  Config: {plugin.config_file}")
+            print(f"  Commands: {', '.join(plugin.commands)}")
+        print("\n" + "=" * 70)
+
+
+def cmd_plugin_enable(args):
+    """Enable a plugin."""
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
     
-    # Validate repository name format
-    import re
-    if not re.match(r'^[a-zA-Z0-9_-]+$', args.repo):
-        print(f"❌ Error: Invalid repository name '{args.repo}'", file=sys.stderr)
-        print("   Repository name should contain only letters, numbers, hyphens, and underscores", file=sys.stderr)
-        sys.exit(1)
-    
-    # Prepare helper args if helper mode is enabled
-    helper_args = {}
-    if args.helper:
-        if args.image_name:
-            helper_args["image_name"] = args.image_name
-        if args.registry:
-            helper_args["registry"] = args.registry
-        if args.port:
-            helper_args["port"] = args.port
-    
-    # Create builder and execute
-    try:
-        builder = DevOpsCIBuilder(
-            repo=args.repo,
-            refs=args.refs,
-            rebuild=args.rebuild,
-            json_output=args.json,
-            short_output=args.short,
-            custom_image=args.custom_image or "",
-            helper_mode=args.helper,
-            helper_args=helper_args
-        )
-        
-        exit_code = builder.build()
-        sys.exit(exit_code)
-    
-    except KeyboardInterrupt:
-        print("\n\n❌ Build cancelled by user", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
+    if plugin_manager.enable_plugin(args.name):
+        print(f"✅ Plugin '{args.name}' enabled")
+    else:
+        print(f"❌ Plugin '{args.name}' not found")
         sys.exit(1)
 
 
-def cmd_images(args):
-    """Check Docker image status."""
-    try:
-        # Load auth
-        auth_data = load_auth_file()
+def cmd_plugin_disable(args):
+    """Disable a plugin."""
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
+    if plugin_manager.disable_plugin(args.name):
+        print(f"✅ Plugin '{args.name}' disabled")
+    else:
+        print(f"❌ Plugin '{args.name}' not found")
+        sys.exit(1)
+
+
+def cmd_plugin_config(args):
+    """Show or edit plugin configuration."""
+    import os
+    import subprocess
+    from pathlib import Path
+    
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
+    config = plugin_manager.get_plugin_config(args.name)
+    
+    if config is None:
+        print(f"❌ Plugin '{args.name}' not found or no config available")
+        sys.exit(1)
+    
+    if args.edit:
+        if args.name not in plugin_manager.plugins:
+            print(f"❌ Plugin '{args.name}' not found")
+            sys.exit(1)
         
-        # Get cicd.json to find IMAGE name
+        plugin = plugin_manager.plugins[args.name]
+        config_path = Path.home() / ".doq" / plugin.config_file
+        
+        editor = os.environ.get('EDITOR', 'vi')
         try:
-            cicd_content = fetch_bitbucket_file(args.repo, args.refs, "cicd/cicd.json", auth_data)
-            cicd_data = json.loads(cicd_content)
-            image_name = cicd_data.get('IMAGE', args.repo)
-        except Exception:
-            # If cicd.json not found, use repo name
-            image_name = args.repo
-        
-        # Get commit hash
-        commit_info = get_commit_hash_from_bitbucket(args.repo, args.refs, auth_data)
-        
-        # Build full image name
-        if commit_info['ref_type'] == 'tag':
-            tag_version = args.refs
-        else:
-            tag_version = commit_info['short_hash']
-        
-        full_image = f"loyaltolpi/{image_name}:{tag_version}"
-        
-        # Check if image exists in Docker Hub (with verbose output)
-        exists = check_docker_image_exists(full_image, auth_data, verbose=True)
-        
-        # If image not ready and --force-build specified, trigger build
-        if not exists and args.force_build:
-            # Show current status first
-            if not args.json:
-                print(json.dumps({
-                    'repository': args.repo,
-                    'reference': args.refs,
-                    'image': full_image,
-                    'ready': False,
-                    'status': 'not-ready'
-                }, indent=2))
-            
-            print(f"\n🔨 Image not ready, starting build...")
-            print(f"   Running: doq devops-ci {args.repo} {args.refs}\n")
-            
-            # Import and call devops-ci builder
-            try:
-                builder = DevOpsCIBuilder(
-                    repo=args.repo,
-                    refs=args.refs,
-                    rebuild=False,
-                    json_output=args.json,
-                    short_output=False,
-                    custom_image="",
-                    helper_mode=False,
-                    helper_args={}
-                )
-                
-                exit_code = builder.build()
-                sys.exit(exit_code)
-            except Exception as e:
-                print(f"❌ Build failed: {e}", file=sys.stderr)
-                sys.exit(1)
-        
-        # Output results (normal mode without force-build)
-        if args.json:
-            result = {
-                'ready': exists,
-                'image': full_image if exists else None,
-                'build-image': full_image if not exists else None
-            }
-            print(json.dumps(result, indent=2))
-        else:
-            # Pretty JSON-like output
-            print(json.dumps({
-                'repository': args.repo,
-                'reference': args.refs,
-                'image': full_image,
-                'ready': exists,
-                'status': 'ready' if exists else 'not-ready'
-            }, indent=2))
-        
-        sys.exit(0 if exists else 1)
-    
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
-        print("   Run 'doq login' to configure authentication", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_get_cicd(args):
-    """Get cicd.json from repository."""
-    try:
-        # Load auth
-        auth_data = load_auth_file()
-        
-        # Fetch cicd.json
-        cicd_content = fetch_bitbucket_file(args.repo, args.refs, "cicd/cicd.json", auth_data)
-        cicd_data = json.loads(cicd_content)
-        
-        # Output results
-        if args.json:
-            print(json.dumps(cicd_data, indent=2))
-        else:
-            print(f"📦 cicd.json for {args.repo}/{args.refs}:")
-            print()
-            print(json.dumps(cicd_data, indent=2))
-        
-        sys.exit(0)
-    
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
-        print("   Run 'doq login' to configure authentication", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
-        sys.exit(1)
+            subprocess.run([editor, str(config_path)])
+            print(f"✅ Configuration updated for '{args.name}'")
+        except Exception as e:
+            print(f"❌ Error editing config: {e}")
+            sys.exit(1)
+    else:
+        print(json.dumps(config, indent=2))
 
 
 def main():
     """Main CLI entry point."""
+    # Initialize plugin manager
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
     parser = argparse.ArgumentParser(
         description='DevOps Q - Simple CLI tool for managing Rancher resources',
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1578,6 +1470,36 @@ def main():
     update_parser.add_argument('--branch', type=str, default=None,
                               help='Branch to update from (default: use branch from version.json)')
     update_parser.set_defaults(func=cmd_update)
+    
+    # Plugin management commands
+    plugin_parser = subparsers.add_parser('plugin', 
+                                          help='Manage plugins',
+                                          description='View and manage doq plugins')
+    plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_command', help='Plugin commands', required=False)
+    
+    # Default to list if no subcommand provided
+    plugin_parser.set_defaults(func=cmd_plugin_list)
+    
+    # Plugin list command
+    plugin_list_parser = plugin_subparsers.add_parser('list', help='List all plugins')
+    plugin_list_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    plugin_list_parser.set_defaults(func=cmd_plugin_list)
+    
+    # Plugin enable command
+    plugin_enable_parser = plugin_subparsers.add_parser('enable', help='Enable a plugin')
+    plugin_enable_parser.add_argument('name', help='Plugin name')
+    plugin_enable_parser.set_defaults(func=cmd_plugin_enable)
+    
+    # Plugin disable command
+    plugin_disable_parser = plugin_subparsers.add_parser('disable', help='Disable a plugin')
+    plugin_disable_parser.add_argument('name', help='Plugin name')
+    plugin_disable_parser.set_defaults(func=cmd_plugin_disable)
+    
+    # Plugin config command
+    plugin_config_parser = plugin_subparsers.add_parser('config', help='Show or edit plugin configuration')
+    plugin_config_parser.add_argument('name', help='Plugin name')
+    plugin_config_parser.add_argument('--edit', action='store_true', help='Edit configuration in $EDITOR')
+    plugin_config_parser.set_defaults(func=cmd_plugin_config)
     
     # Version command
     version_parser = subparsers.add_parser('version', help='Show installed version information')
@@ -1688,55 +1610,8 @@ def main():
                                     help='Set as current context after saving')
     kubeconfig_parser.set_defaults(func=cmd_kube_config, flatten=True)
     
-    # DevOps CI/CD command
-    devops_ci_parser = subparsers.add_parser('devops-ci', 
-                                             help='Build Docker images from repositories',
-                                             description='Build Docker images from Bitbucket repositories using buildx with SBOM and provenance support')
-    devops_ci_parser.add_argument('repo', nargs='?', help='Repository name (e.g., saas-be-core, saas-apigateway)')
-    devops_ci_parser.add_argument('refs', nargs='?', help='Branch or tag name (e.g., develop, main, v1.0.0)')
-    devops_ci_parser.add_argument('custom_image', nargs='?', default='',
-                                   help='(Optional) Custom image name/tag to override default')
-    devops_ci_parser.add_argument('--rebuild', action='store_true',
-                                   help='Force rebuild even if image already exists')
-    devops_ci_parser.add_argument('--json', action='store_true',
-                                   help='Show build progress + JSON result at end')
-    devops_ci_parser.add_argument('--short', action='store_true',
-                                   help='Silent build, output only image name')
-    devops_ci_parser.add_argument('--helper', action='store_true',
-                                   help='Use helper mode (no API dependency)')
-    devops_ci_parser.add_argument('--image-name',
-                                   help='(Helper mode) Custom image name to build')
-    devops_ci_parser.add_argument('--registry',
-                                   help='(Helper mode) Registry URL for build args')
-    devops_ci_parser.add_argument('--port',
-                                   help='(Helper mode) Application port for build args')
-    devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
-                                   help='Show detailed DevOps CI help')
-    devops_ci_parser.add_argument('--version-devops-ci', action='store_true',
-                                   help='Show DevOps CI version')
-    devops_ci_parser.set_defaults(func=cmd_devops_ci)
-    
-    # Images command - check Docker image status
-    images_parser = subparsers.add_parser('images',
-                                          help='Check Docker image status in Docker Hub',
-                                          description='Check if a Docker image exists in Docker Hub for the given repository and branch/tag')
-    images_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
-    images_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
-    images_parser.add_argument('--json', action='store_true',
-                               help='Output in JSON format')
-    images_parser.add_argument('--force-build', action='store_true',
-                               help='Automatically build image if not ready')
-    images_parser.set_defaults(func=cmd_images)
-    
-    # Get-cicd command - fetch cicd.json from Bitbucket
-    get_cicd_parser = subparsers.add_parser('get-cicd',
-                                            help='Get cicd.json from Bitbucket repository',
-                                            description='Fetch and display the cicd.json configuration file from a Bitbucket repository')
-    get_cicd_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
-    get_cicd_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
-    get_cicd_parser.add_argument('--json', action='store_true',
-                                 help='Output in compact JSON format (default is pretty-printed)')
-    get_cicd_parser.set_defaults(func=cmd_get_cicd)
+    # Register plugin commands dynamically
+    plugin_manager.register_plugin_commands(subparsers)
     
     args = parser.parse_args()
     
