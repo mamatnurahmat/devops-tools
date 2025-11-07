@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import requests
 import os
+import base64
 
 
 # Bitbucket API constants
@@ -80,8 +81,65 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
             print(f"⚠️  Warning: Could not create {auth_file_path}: {e}", file=sys.stderr)
             return env_auth
     
+    # Try to load from Docker config (~/.docker/config.json)
+    try:
+        docker_config_path = Path.home() / ".docker" / "config.json"
+        if docker_config_path.exists():
+            with open(docker_config_path, 'r') as f:
+                docker_cfg = json.load(f)
+            auths = docker_cfg.get('auths', {}) or {}
+            # Common keys used by Docker for Docker Hub
+            for hub_key in [
+                "https://index.docker.io/v1/",
+                "https://registry-1.docker.io/",
+                "registry-1.docker.io",
+                "docker.io"
+            ]:
+                if hub_key in auths:
+                    auth_entry = auths.get(hub_key) or {}
+                    auth_b64 = auth_entry.get('auth')
+                    if auth_b64:
+                        try:
+                            decoded = base64.b64decode(auth_b64).decode('utf-8')
+                            if ':' in decoded:
+                                user, pwd = decoded.split(':', 1)
+                                env_auth.setdefault('DOCKERHUB_USER', user)
+                                env_auth.setdefault('DOCKERHUB_PASSWORD', pwd)
+                                break
+                        except Exception:
+                            pass
+    except Exception:
+        # Ignore docker config parsing errors
+        pass
+
+    # Try to load Bitbucket creds from ~/.netrc (default machine: bitbucket.org)
+    try:
+        from plugins.shared_helpers import load_netrc_credentials  # self import safe at runtime
+        netrc_creds = load_netrc_credentials('bitbucket.org')
+        if netrc_creds.get('username') and netrc_creds.get('password'):
+            env_auth.setdefault('GIT_USER', netrc_creds['username'])
+            env_auth.setdefault('GIT_PASSWORD', netrc_creds['password'])
+    except Exception:
+        # Ignore if .netrc missing or cannot parse
+        pass
+
+    # If any credentials gathered from docker/netrc, persist and return
+    if env_auth and len(env_auth) >= 2:
+        try:
+            auth_file_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(auth_file_path, 'w') as f:
+                json.dump(env_auth, f, indent=2)
+            auth_file_path.chmod(0o600)
+            print(f"✅ Auto-created {auth_file_path} from Docker/NETRC credentials", file=sys.stderr)
+            return env_auth
+        except Exception as e:
+            print(f"⚠️  Warning: Could not create {auth_file_path}: {e}", file=sys.stderr)
+            return env_auth
+
     # No credentials found anywhere
-    raise FileNotFoundError(f"Authentication file {auth_file_path} not found. Run 'doq login' to configure.")
+    raise FileNotFoundError(
+        f"Authentication file {auth_file_path} not found. Configure via 'doq login' or ensure ~/.docker/config.json and ~/.netrc are set."
+    )
 
 
 def validate_auth_file() -> Dict[str, Any]:
