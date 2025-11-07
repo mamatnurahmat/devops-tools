@@ -4,38 +4,131 @@ Simple CLI tool untuk mengelola Rancher resources menggunakan Python.
 
 ## Instalasi
 
-### Metode Instalasi (Menggunakan uv)
+### Quick Install (Cara Tercepat - Recommended)
 
-#### Installer Script (Recommended)
+Instalasi langsung dalam satu command tanpa perlu clone repository manual dan **tanpa perlu root permission**:
 
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes
 ```
 
-Script ini akan:
-- Menginstall `uv` package manager jika belum tersedia (otomatis)
-- Menginstall dependencies menggunakan `uv` (lebih cepat dan reliable dibanding pip)
-- Membuat executable `doq` di `~/.local/bin`
-- Menambahkan ke PATH (jika belum ada)
-- Menyimpan commit hash ke file version tracking
+**Apa yang terjadi:**
+1. ✅ Script otomatis clone repository ke `~/.local/share/devops-q` (user directory, tidak perlu root)
+2. ✅ Menginstall `uv` package manager jika belum tersedia
+3. ✅ Menginstall semua dependencies menggunakan `uv`
+4. ✅ Membuat executable `doq` di `~/.local/bin`
+5. ✅ Menyimpan commit hash untuk version tracking
 
-Setelah instalasi, jalankan:
+**Setelah instalasi:**
 ```bash
+# Tambahkan ke PATH jika belum ada (untuk shell saat ini)
+export PATH="${HOME}/.local/bin:${PATH}"
+
+# Atau tambahkan ke ~/.bashrc atau ~/.zshrc untuk permanen
+echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> ~/.bashrc
+
+# Verifikasi instalasi
 doq --help
 ```
 
-Jika `~/.local/bin` belum ada di PATH, tambahkan ke `~/.bashrc` atau `~/.zshrc`:
+**Catatan:** Default instalasi menggunakan direktori user (`~/.local/share/devops-q`) sehingga tidak memerlukan root permission. Jika ingin install ke `/opt` atau lokasi sistem lainnya, gunakan `--prefix` dengan sudo.
+
+### Metode Instalasi Lainnya
+
+#### 1. Instalasi dengan Opsi Kustom
+
+Jika ingin mengubah lokasi instalasi atau menggunakan branch/commit tertentu:
+
 ```bash
-export PATH="${HOME}/.local/bin:${PATH}"
+# Install ke direktori custom
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes --prefix /opt/my-devops-q
+
+# Install dari branch atau commit tertentu
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes --ref develop
+
+# Install dengan semua opsi kustom
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes \
+  --repo https://github.com/mamatnurahmat/devops-tools \
+  --ref main \
+  --prefix /opt/devops-q
 ```
 
-#### Alternatif: Menggunakan uv secara langsung
+**Opsi yang Tersedia:**
+- `--yes`: Auto-clone repository tanpa konfirmasi (diperlukan untuk pipe mode)
+- `--repo URL`: URL repository GitHub (default: https://github.com/mamatnurahmat/devops-tools)
+- `--ref BRANCH`: Branch atau commit hash (default: main)
+- `--prefix DIR`: Direktori untuk clone repository (default: `~/.local/share/devops-q` - tidak perlu root)
+- `--skip-clone`: Skip auto-clone jika sudah di dalam project directory
 
-Jika Anda sudah memiliki `uv` terinstall, Anda bisa menginstall dependencies secara langsung:
+**Tips:**
+- Default `--prefix` menggunakan user directory (`~/.local/share/devops-q`) sehingga tidak memerlukan root permission
+- Jika ingin install ke `/opt` atau lokasi sistem lainnya yang memerlukan root, gunakan `sudo` atau ubah ownership setelah clone:
+  ```bash
+  curl -fsSL ... | bash -s -- --yes --prefix /opt/devops-q
+  # Jika error permission, gunakan:
+  sudo mkdir -p /opt/devops-q
+  sudo chown -R $(whoami):$(whoami) /opt/devops-q
+  curl -fsSL ... | bash -s -- --yes --prefix /opt/devops-q
+  ```
+
+**Menggunakan Environment Variables:**
+
+```bash
+# Menggunakan user directory (default, tidak perlu root)
+REPO_URL=https://github.com/mamatnurahmat/devops-tools \
+REPO_REF=main \
+PREFIX="${HOME}/.local/share/devops-q" \
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes
+
+# Atau ke lokasi sistem (memerlukan root)
+REPO_URL=https://github.com/mamatnurahmat/devops-tools \
+REPO_REF=main \
+PREFIX=/opt/devops-q \
+curl -fsSL https://raw.githubusercontent.com/mamatnurahmat/devops-tools/main/install.sh | bash -s -- --yes
+```
+
+#### 2. Manual Clone (Jika Lebih Suka Clone Manual)
+
+Jika ingin clone repository secara manual terlebih dahulu:
+
+```bash
+# Clone repository ke user directory (tidak perlu root)
+git clone https://github.com/mamatnurahmat/devops-tools.git ~/.local/share/devops-q
+cd ~/.local/share/devops-q
+
+# Jalankan installer
+./install.sh
+```
+
+Atau jika ingin clone ke lokasi sistem (membutuhkan root):
+
+```bash
+# Clone repository ke /opt (membutuhkan root)
+sudo git clone https://github.com/mamatnurahmat/devops-tools.git /opt/devops-q
+sudo chown -R $(whoami):$(whoami) /opt/devops-q
+cd /opt/devops-q
+
+# Jalankan installer
+./install.sh
+```
+
+Script installer akan:
+- Menginstall `uv` package manager jika belum tersedia (otomatis)
+- Menginstall dependencies menggunakan `uv` (lebih cepat dan reliable dibanding pip)
+- Membuat executable `doq` di `~/.local/bin`
+- Menyimpan commit hash ke file version tracking
+
+#### 3. Menggunakan uv Langsung (Advanced)
+
+Jika Anda sudah memiliki `uv` terinstall dan ingin kontrol lebih:
 
 ```bash
 # Install uv jika belum ada
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone repository
+git clone https://github.com/mamatnurahmat/devops-tools.git /opt/devops-q
+cd /opt/devops-q
 
 # Install project dependencies
 uv pip install -e .
