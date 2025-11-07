@@ -11,6 +11,7 @@ from config import load_config, save_config, get_config_file_path, config_exists
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
 from plugin_manager import PluginManager
 from plugins.shared_helpers import load_netrc_credentials
+from plugins.set_image_yaml import update_image_in_repo, ImageUpdateError
 # Plugins are now loaded dynamically via PluginManager
 # No need to import plugin modules directly
 
@@ -1089,6 +1090,51 @@ def cmd_set_image(args):
         sys.exit(1)
 
 
+def cmd_set_image_yaml(args):
+    """Update image reference inside YAML file in Bitbucket repo."""
+    repo = args.repo
+    refs = args.refs
+    yaml_path = args.yaml_path
+    image = args.image
+    dry_run = args.dry_run
+
+    if not repo or not refs or not yaml_path or not image:
+        print("Error: repo, refs, yaml_path, dan image wajib diisi", file=sys.stderr)
+        sys.exit(1)
+
+    print("?? Updating image in YAML file")
+    print(f"   Repository : {repo}")
+    print(f"   Branch     : {refs}")
+    print(f"   YAML Path  : {yaml_path}")
+    print(f"   New Image  : {image}")
+
+    try:
+        result = update_image_in_repo(repo, refs, yaml_path, image, dry_run=dry_run)
+
+        if result.get('success'):
+            if result.get('skipped'):
+                # Image sudah sesuai, skip update
+                print(f"✅ {result.get('message')}")
+                return
+            elif dry_run:
+                print("✅ Perubahan sukses (dry-run). Tidak ada push dilakukan.")
+            else:
+                print("✅ Image berhasil diperbarui dan dipush.")
+                commit_info = result.get('commit')
+                if commit_info:
+                    print(commit_info)
+        else:
+            print(f"⚠️  {result.get('message')}")
+            sys.exit(1)
+
+    except ImageUpdateError as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error tidak terduga: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_check_update(args):
     """Check if there are updates available."""
     try:
@@ -1656,7 +1702,17 @@ def main():
     set_image_parser.add_argument('deployment', help='Deployment name')
     set_image_parser.add_argument('image', help='Image URL/tag (e.g., nginx:1.20 or registry.example.com/app:v1.0)')
     set_image_parser.set_defaults(func=cmd_set_image)
-    
+
+    set_image_yaml_parser = subparsers.add_parser('set-image-yaml',
+                                                  help='Update image field inside YAML file in Bitbucket repo',
+                                                  description='Clone repository, update YAML image field, commit, dan push ke branch yang sama.')
+    set_image_yaml_parser.add_argument('repo', help='Repository name (contoh: saas-apigateway)')
+    set_image_yaml_parser.add_argument('refs', help='Branch target (contoh: develop)')
+    set_image_yaml_parser.add_argument('yaml_path', help='Lokasi file YAML relatif terhadap root repo')
+    set_image_yaml_parser.add_argument('image', help='Image baru (contoh: loyaltolpi/api:fc0bd25)')
+    set_image_yaml_parser.add_argument('--dry-run', action='store_true', help='Hanya simulasi perubahan tanpa commit/push')
+    set_image_yaml_parser.set_defaults(func=cmd_set_image_yaml)
+
     # Get image command
     get_image_parser = subparsers.add_parser('get-image',
                                              help='Get current image information for deployment in namespace',

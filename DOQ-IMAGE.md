@@ -487,6 +487,32 @@ else
 fi
 ```
 
+### Example 6: Update Image Reference in YAML
+```bash
+#!/bin/bash
+# Update deployment manifest image directly in Bitbucket repo
+
+REPO="saas-apigateway"
+BRANCH="develop"
+YAML_PATH="deploy/k8s/deployment.yaml"
+IMAGE="loyaltolpi/saas-apigateway:fc0bd25"
+
+# Preview change without pushing
+doq set-image-yaml "$REPO" "$BRANCH" "$YAML_PATH" "$IMAGE" --dry-run
+
+# Apply and push change
+doq set-image-yaml "$REPO" "$BRANCH" "$YAML_PATH" "$IMAGE"
+```
+
+**Validasi Otomatis:**
+- ✅ **Image Ready Check**: Memastikan image sudah tersedia di Docker Hub sebelum update
+- ✅ **Duplicate Check**: Membandingkan image di YAML dengan image yang akan di-update
+  - Jika image sudah sama, proses akan di-skip dengan pesan informatif
+  - Menghemat waktu dan menghindari commit yang tidak perlu
+- ✅ **YAML Validation**: Memeriksa file YAML dari Bitbucket sebelum clone
+
+> Pastikan memiliki akses tulis ke repository Bitbucket dan autentikasi tersimpan di `~/.doq/auth.json` atau `~/.netrc`.
+
 ---
 
 ## 🔧 Troubleshooting
