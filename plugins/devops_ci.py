@@ -445,16 +445,41 @@ class DevOpsCIBuilder:
         try:
             commit_info = get_commit_hash_from_bitbucket(self.repo, self.refs, auth_data)
             
-            # Use custom image name from helper args if provided
-            image_name = self.helper_args.get('image_name', self.repo)
-            namespace = self.config.get('docker.namespace', 'loyaltolpi')
+            # Get custom image name from helper args if provided
+            custom_image = self.helper_args.get('image_name', '')
             
-            if commit_info['ref_type'] == 'tag':
-                tag_version = self.refs
+            if custom_image:
+                # Check if user provided explicit tag
+                if ':' in custom_image:
+                    # User provided explicit tag - use as-is
+                    full_image = custom_image
+                    tag_version = custom_image.split(':')[1]
+                else:
+                    # No tag provided - add commit hash
+                    image_base = custom_image
+                    
+                    # Check if already has namespace
+                    if '/' in image_base:
+                        full_image_base = image_base
+                    else:
+                        namespace = self.config.get('docker.namespace', 'loyaltolpi')
+                        full_image_base = f"{namespace}/{image_base}"
+                    
+                    # Add commit hash as tag
+                    if commit_info['ref_type'] == 'tag':
+                        tag_version = self.refs
+                    else:
+                        tag_version = commit_info['short_hash']
+                    
+                    full_image = f"{full_image_base}:{tag_version}"
             else:
-                tag_version = commit_info['short_hash']
-            
-            full_image = f"{namespace}/{image_name}:{tag_version}"
+                # No custom image - use default
+                namespace = self.config.get('docker.namespace', 'loyaltolpi')
+                if commit_info['ref_type'] == 'tag':
+                    tag_version = self.refs
+                else:
+                    tag_version = commit_info['short_hash']
+                full_image = f"{namespace}/{self.repo}:{tag_version}"
             
             return {
                 'image_name': full_image,
@@ -641,15 +666,24 @@ def cmd_devops_ci(args):
         print("   Usage: doq devops-ci <repo> <refs> [options]", file=sys.stderr)
         sys.exit(1)
     
-    # Build helper args if in helper mode
+    # Auto-detect helper mode based on helper-specific arguments
     helper_args = {}
-    if args.helper:
-        if hasattr(args, 'image_name') and args.image_name:
-            helper_args['image_name'] = args.image_name
-        if hasattr(args, 'registry') and args.registry:
-            helper_args['registry'] = args.registry
-        if hasattr(args, 'port') and args.port:
-            helper_args['port'] = args.port
+    auto_helper_mode = False
+    
+    if hasattr(args, 'image_name') and args.image_name:
+        helper_args['image_name'] = args.image_name
+        auto_helper_mode = True
+    
+    if hasattr(args, 'registry') and args.registry:
+        helper_args['registry'] = args.registry
+        auto_helper_mode = True
+    
+    if hasattr(args, 'port') and args.port:
+        helper_args['port'] = args.port
+        auto_helper_mode = True
+    
+    # Use explicit --helper flag if provided, otherwise use auto-detected mode
+    helper_mode = args.helper or auto_helper_mode
     
     # Create builder
     builder = DevOpsCIBuilder(
@@ -659,7 +693,7 @@ def cmd_devops_ci(args):
         json_output=args.json,
         short_output=args.short,
         custom_image=args.custom_image,
-        helper_mode=args.helper,
+        helper_mode=helper_mode,
         helper_args=helper_args
     )
     
@@ -692,13 +726,13 @@ def register_commands(subparsers):
     devops_ci_parser.add_argument('--short', action='store_true',
                                    help='Silent build, output only image name')
     devops_ci_parser.add_argument('--helper', action='store_true',
-                                   help='Use helper mode (no API dependency)')
+                                   help='Explicitly enable helper mode (auto-enabled if --image-name, --registry, or --port is used)')
     devops_ci_parser.add_argument('--image-name',
-                                   help='(Helper mode) Custom image name to build')
+                                   help='Custom image name to build (auto-enables helper mode)')
     devops_ci_parser.add_argument('--registry',
-                                   help='(Helper mode) Registry URL for build args')
+                                   help='Registry URL for build args (auto-enables helper mode)')
     devops_ci_parser.add_argument('--port',
-                                   help='(Helper mode) Application port for build args')
+                                   help='Application port for build args (auto-enables helper mode)')
     devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
                                    help='Show detailed DevOps CI help')
     devops_ci_parser.add_argument('--version-devops-ci', action='store_true',

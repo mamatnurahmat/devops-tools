@@ -993,6 +993,8 @@ Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersed
 
 ### Check Docker Image Status
 
+> 📖 **Detailed Documentation**: See [DOQ-IMAGES.md](DOQ-IMAGES.md) for comprehensive guide with flow diagrams and examples.
+
 Command `doq images` memungkinkan Anda untuk mengecek apakah Docker image sudah tersedia di Docker Hub:
 
 ```bash
