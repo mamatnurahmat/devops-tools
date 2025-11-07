@@ -3,9 +3,13 @@
 import argparse
 import getpass
 import sys
+import json
 from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
+from plugin_manager import PluginManager
+# Plugins are now loaded dynamically via PluginManager
+# No need to import plugin modules directly
 
 
 def print_table(headers, rows):
@@ -884,17 +888,14 @@ def cmd_get_image(args):
     ns = args.namespace
     deployment = args.deployment
     
-    print(f"?? Getting image information for deployment '{deployment}' in namespace '{ns}'")
+    # Silent mode: no verbose output, JSON only
     
     # First, ensure context is correct
-    print(f"\n?? Ensuring correct context for namespace '{ns}'...")
     selected_context = _switch_context_by_namespace(ns)
     
     if not selected_context:
         print("Error: Failed to switch to correct context", file=sys.stderr)
         sys.exit(1)
-    
-    print(f"? Context verified: {selected_context}")
     
     # Check if kubectl is available
     if not shutil.which('kubectl'):
@@ -903,7 +904,6 @@ def cmd_get_image(args):
         sys.exit(1)
     
     # Get deployment information
-    print(f"\n?? Getting deployment information...")
     try:
         get_result = subprocess.run(
             ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
@@ -926,39 +926,33 @@ def cmd_get_image(args):
             print("Error: No containers found in deployment", file=sys.stderr)
             sys.exit(1)
         
-        # Display image information
-        if args.json:
-            # JSON output
-            images_info = []
-            for container in containers:
-                images_info.append({
-                    'container': container.get('name', 'unknown'),
-                    'image': container.get('image', 'unknown')
-                })
-            output = {
-                'namespace': ns,
-                'deployment': deployment,
-                'context': selected_context,
-                'containers': images_info
-            }
-            print(json.dumps(output, indent=2))
-        else:
-            # Human-readable output
-            print(f"\n? Deployment: {deployment}")
-            print(f"   Namespace: {ns}")
-            print(f"   Context: {selected_context}")
-            print(f"\n📦 Container Images:")
-            print("=" * 60)
+        # Extract image information with tag version
+        images_info = []
+        for container in containers:
+            image_full = container.get('image', 'unknown')
             
-            for container in containers:
-                container_name = container.get('name', 'unknown')
-                image = container.get('image', 'unknown')
-                print(f"  Container: {container_name}")
-                print(f"  Image:     {image}")
-                print()
+            # Parse image to extract tag version
+            # Format: registry/namespace/repo:tag or namespace/repo:tag or repo:tag
+            if ':' in image_full:
+                image_base, tag = image_full.rsplit(':', 1)
+            else:
+                image_base = image_full
+                tag = 'latest'
             
-            if len(containers) == 1:
-                print(f"✅ Current image: {containers[0].get('image', 'unknown')}")
+            images_info.append({
+                'container': container.get('name', 'unknown'),
+                'image': image_full,
+                'tag': tag
+            })
+        
+        # Always output as JSON (silent mode)
+        output = {
+            'namespace': ns,
+            'deployment': deployment,
+            'context': selected_context,
+            'containers': images_info
+        }
+        print(json.dumps(output, indent=2))
         
     except json.JSONDecodeError:
         print("Error: Failed to parse deployment JSON", file=sys.stderr)
@@ -1134,48 +1128,67 @@ def cmd_update(args):
     import tempfile
     from pathlib import Path
     
-    repo_url = "https://github.com/mamatnurahmat/devops-tools"
-    branch = "main"
+    # Get current version info
+    current_version = get_version()
+    repo_url = current_version.get('repo_url', "https://github.com/mamatnurahmat/devops-tools")
+    
+    # Determine branch: CLI arg > version.json > default "main"
+    if args.branch:
+        branch = args.branch
+        print(f"🔀 Using branch from CLI argument: {branch}")
+    else:
+        branch = current_version.get('branch', "main")
+        print(f"🔀 Using branch from version.json: {branch}")
     
     # Determine commit hash
     if args.latest:
-        commit_hash = get_latest_commit_hash()
+        commit_hash = get_latest_commit_hash(branch)
         if not commit_hash:
-            print("Error: Tidak dapat mengambil latest commit hash dari repository", file=sys.stderr)
+            print(f"Error: Tidak dapat mengambil latest commit hash dari branch '{branch}'", file=sys.stderr)
             sys.exit(1)
     elif args.commit_hash:
         commit_hash = args.commit_hash
     else:
         # If no commit hash provided, check current version and update to latest
-        print("?? Checking current version...")
-        current_version = get_version()
+        print("🔍 Checking current version...")
         current_hash = current_version.get('commit_hash', 'unknown')
         
-        # Get latest commit hash
-        latest_hash = get_latest_commit_hash()
+        # Get latest commit hash from the specified branch
+        latest_hash = get_latest_commit_hash(branch)
         if not latest_hash:
-            print("Error: Tidak dapat mengambil latest commit hash dari repository", file=sys.stderr)
+            print(f"Error: Tidak dapat mengambil latest commit hash dari branch '{branch}'", file=sys.stderr)
             sys.exit(1)
         
-        # Compare with current version
-        if current_hash != 'unknown' and current_hash == latest_hash:
-            print("? Sudah menggunakan versi terbaru!")
+        # Get current branch for comparison
+        current_branch = current_version.get('branch', 'main')
+        
+        # If switching branch, always update
+        if args.branch and args.branch != current_branch:
+            print(f"\n🔀 Switching branch: {current_branch} → {branch}")
+            print(f"   Latest commit on '{branch}': {latest_hash[:8]}...")
+            print(f"   Will update to new branch...\n")
+            commit_hash = latest_hash
+        # If same branch, compare commit hashes
+        elif current_hash != 'unknown' and current_hash == latest_hash:
+            print("✅ Sudah menggunakan versi terbaru!")
+            print(f"   Branch: {branch}")
             print(f"   Current version: {current_hash[:8]}...")
             print(f"   Latest version:  {latest_hash[:8]}...")
             print(f"   Installed at:    {current_version.get('installed_at', 'unknown')}")
             print("\nTidak ada update yang diperlukan.")
             return
-        
         # Update to latest
-        if current_hash != 'unknown':
-            print(f"\n?? Update tersedia!")
-            print(f"   Current version: {current_hash[:8]}...")
-            print(f"   Latest version:  {latest_hash[:8]}...")
-            print(f"   Will update to latest version...\n")
         else:
-            print(f"\n?? Will update to latest version: {latest_hash[:8]}...\n")
-        
-        commit_hash = latest_hash
+            if current_hash != 'unknown':
+                print(f"\n📢 Update tersedia!")
+                print(f"   Branch: {branch}")
+                print(f"   Current version: {current_hash[:8]}...")
+                print(f"   Latest version:  {latest_hash[:8]}...")
+                print(f"   Will update to latest version...\n")
+            else:
+                print(f"\n📢 Will update to latest version: {latest_hash[:8]}...")
+                print(f"   Branch: {branch}\n")
+            commit_hash = latest_hash
     
     # Check if git is available
     if not shutil.which('git'):
@@ -1234,12 +1247,13 @@ def cmd_update(args):
             print(f"\nError running installer (exit code: {result.returncode})", file=sys.stderr)
             sys.exit(1)
         
-        # Save version after successful update
-        save_version(commit_hash)
+        # Save version after successful update (preserve branch)
+        save_version(commit_hash, branch)
         
         print("\n" + "=" * 50)
         print("? Update completed successfully!")
-        print(f"   Updated to commit: {commit_hash}")
+        print(f"   Branch: {branch}")
+        print(f"   Commit: {commit_hash}")
         
     except KeyboardInterrupt:
         print("\n\nUpdate cancelled by user", file=sys.stderr)
@@ -1306,8 +1320,97 @@ def cmd_config(args):
         print(f"Insecure: {config['insecure']}")
 
 
+def cmd_plugin_list(args):
+    """List all plugins and their status."""
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
+    plugins = plugin_manager.list_plugins()
+    
+    if not plugins:
+        print("No plugins found.")
+        return
+    
+    if args.json:
+        output = [p.to_dict() for p in plugins]
+        print(json.dumps(output, indent=2))
+    else:
+        print("\n📦 Installed Plugins:")
+        print("=" * 70)
+        for plugin in plugins:
+            status = "✅ enabled" if plugin.enabled else "❌ disabled"
+            print(f"\n  {plugin.name} (v{plugin.version}) - {status}")
+            print(f"  Description: {plugin.description}")
+            print(f"  Module: {plugin.module}")
+            print(f"  Config: {plugin.config_file}")
+            print(f"  Commands: {', '.join(plugin.commands)}")
+        print("\n" + "=" * 70)
+
+
+def cmd_plugin_enable(args):
+    """Enable a plugin."""
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
+    if plugin_manager.enable_plugin(args.name):
+        print(f"✅ Plugin '{args.name}' enabled")
+    else:
+        print(f"❌ Plugin '{args.name}' not found")
+        sys.exit(1)
+
+
+def cmd_plugin_disable(args):
+    """Disable a plugin."""
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
+    if plugin_manager.disable_plugin(args.name):
+        print(f"✅ Plugin '{args.name}' disabled")
+    else:
+        print(f"❌ Plugin '{args.name}' not found")
+        sys.exit(1)
+
+
+def cmd_plugin_config(args):
+    """Show or edit plugin configuration."""
+    import os
+    import subprocess
+    from pathlib import Path
+    
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
+    config = plugin_manager.get_plugin_config(args.name)
+    
+    if config is None:
+        print(f"❌ Plugin '{args.name}' not found or no config available")
+        sys.exit(1)
+    
+    if args.edit:
+        if args.name not in plugin_manager.plugins:
+            print(f"❌ Plugin '{args.name}' not found")
+            sys.exit(1)
+        
+        plugin = plugin_manager.plugins[args.name]
+        config_path = Path.home() / ".doq" / plugin.config_file
+        
+        editor = os.environ.get('EDITOR', 'vi')
+        try:
+            subprocess.run([editor, str(config_path)])
+            print(f"✅ Configuration updated for '{args.name}'")
+        except Exception as e:
+            print(f"❌ Error editing config: {e}")
+            sys.exit(1)
+    else:
+        print(json.dumps(config, indent=2))
+
+
 def main():
     """Main CLI entry point."""
+    # Initialize plugin manager
+    plugin_manager = PluginManager()
+    plugin_manager.load_plugins()
+    
     parser = argparse.ArgumentParser(
         description='DevOps Q - Simple CLI tool for managing Rancher resources',
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1348,12 +1451,45 @@ def main():
     update_parser = subparsers.add_parser('update', 
                                           help='Update DevOps Q from GitHub repository',
                                           description='Update DevOps Q to latest version or specific commit. '
-                                                    'If no commit hash is provided, will update to latest commit from main branch.')
+                                                    'By default uses branch from version.json, or specify with --branch.')
     update_parser.add_argument('commit_hash', nargs='?', 
                               help='Git commit hash to update to (optional, defaults to latest if not provided)')
     update_parser.add_argument('--latest', action='store_true', 
                               help='Update to latest commit from repository (same as running without arguments)')
+
+    update_parser.add_argument('--branch', type=str, default=None,
+                              help='Branch to update from (default: use branch from version.json)')
     update_parser.set_defaults(func=cmd_update)
+    
+    # Plugin management commands
+    plugin_parser = subparsers.add_parser('plugin', 
+                                          help='Manage plugins',
+                                          description='View and manage doq plugins')
+    plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_command', help='Plugin commands', required=False)
+    
+    # Default to list if no subcommand provided
+    plugin_parser.set_defaults(func=cmd_plugin_list)
+    
+    # Plugin list command
+    plugin_list_parser = plugin_subparsers.add_parser('list', help='List all plugins')
+    plugin_list_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    plugin_list_parser.set_defaults(func=cmd_plugin_list)
+    
+    # Plugin enable command
+    plugin_enable_parser = plugin_subparsers.add_parser('enable', help='Enable a plugin')
+    plugin_enable_parser.add_argument('name', help='Plugin name')
+    plugin_enable_parser.set_defaults(func=cmd_plugin_enable)
+    
+    # Plugin disable command
+    plugin_disable_parser = plugin_subparsers.add_parser('disable', help='Disable a plugin')
+    plugin_disable_parser.add_argument('name', help='Plugin name')
+    plugin_disable_parser.set_defaults(func=cmd_plugin_disable)
+    
+    # Plugin config command
+    plugin_config_parser = plugin_subparsers.add_parser('config', help='Show or edit plugin configuration')
+    plugin_config_parser.add_argument('name', help='Plugin name')
+    plugin_config_parser.add_argument('--edit', action='store_true', help='Edit configuration in $EDITOR')
+    plugin_config_parser.set_defaults(func=cmd_plugin_config)
     
     # Version command
     version_parser = subparsers.add_parser('version', help='Show installed version information')
@@ -1463,6 +1599,9 @@ def main():
     kubeconfig_parser.add_argument('--set-context', action='store_true',
                                     help='Set as current context after saving')
     kubeconfig_parser.set_defaults(func=cmd_kube_config, flatten=True)
+    
+    # Register plugin commands dynamically
+    plugin_manager.register_plugin_commands(subparsers)
     
     args = parser.parse_args()
     

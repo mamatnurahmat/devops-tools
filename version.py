@@ -1,95 +1,131 @@
-"""Version tracking for DevOps Q CLI."""
+"""Version tracking and update management for DevOps Q CLI."""
 import json
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict
+from datetime import datetime, timezone
 
 
-VERSION_FILE = Path.home() / '.doq' / 'version.json'
+VERSION_FILE = Path.home() / ".doq" / "version.json"
 REPO_URL = "https://github.com/mamatnurahmat/devops-tools"
-BRANCH = "main"
+REPO_BRANCH = "main"
 
 
-def ensure_version_file():
-    """Ensure version file exists."""
+def ensure_version_dir():
+    """Ensure version directory exists."""
     VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def get_version():
+    """Get current installed version information.
+    
+    Returns:
+        dict: Version information with keys:
+            - commit_hash: Git commit hash
+            - installed_at: Installation timestamp (ISO format)
+            - repo_url: Repository URL
+            - branch: Git branch
+    """
     if not VERSION_FILE.exists():
-        # Create file with default values without calling save_version to avoid recursion
-        import datetime
-        version_data = {
+        return {
             'commit_hash': 'unknown',
-            'installed_at': datetime.datetime.now().isoformat(),
+            'installed_at': 'unknown',
             'repo_url': REPO_URL,
-            'branch': BRANCH
+            'branch': REPO_BRANCH
         }
-        with open(VERSION_FILE, 'w') as f:
-            json.dump(version_data, f, indent=2)
-
-
-def get_version() -> Dict[str, str]:
-    """Get current installed version from version file."""
-    ensure_version_file()
+    
     try:
         with open(VERSION_FILE, 'r') as f:
             return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return {'commit_hash': 'unknown', 'installed_at': 'unknown'}
+    except Exception:
+        return {
+            'commit_hash': 'unknown',
+            'installed_at': 'unknown',
+            'repo_url': REPO_URL,
+            'branch': REPO_BRANCH
+        }
 
 
-def save_version(commit_hash: str, installed_at: Optional[str] = None):
-    """Save version information to version file."""
-    ensure_version_file()
-    import datetime
+def save_version(commit_hash, branch=None):
+    """Save version information to file.
     
-    if installed_at is None:
-        installed_at = datetime.datetime.now().isoformat()
+    Args:
+        commit_hash: Git commit hash to save
+        branch: Branch name (optional, will preserve current if not provided)
+    """
+    ensure_version_dir()
     
-    version_data = {
+    # Get current version to preserve branch if not specified
+    if branch is None:
+        current_version = get_version()
+        branch = current_version.get('branch', REPO_BRANCH)
+    
+    version_info = {
         'commit_hash': commit_hash,
-        'installed_at': installed_at,
+        'installed_at': datetime.now(timezone.utc).isoformat(),
         'repo_url': REPO_URL,
-        'branch': BRANCH
+        'branch': branch
     }
     
-    with open(VERSION_FILE, 'w') as f:
-        json.dump(version_data, f, indent=2)
-
-
-def get_latest_commit_hash() -> Optional[str]:
-    """Get latest commit hash from remote repository."""
     try:
-        # Use git ls-remote to get latest commit without cloning
-        cmd = ['git', 'ls-remote', REPO_URL, f'refs/heads/{BRANCH}']
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        with open(VERSION_FILE, 'w') as f:
+            json.dump(version_info, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not save version info: {e}")
+
+
+def get_latest_commit_hash(branch=None):
+    """Get latest commit hash from remote repository.
+    
+    Uses git ls-remote to get the latest commit hash without cloning.
+    
+    Args:
+        branch: Branch name (optional, will use current version's branch if not provided)
+    
+    Returns:
+        str: Latest commit hash or None if failed
+    """
+    # If branch not specified, get from current version
+    if branch is None:
+        current_version = get_version()
+        branch = current_version.get('branch', REPO_BRANCH)
+    
+    try:
+        result = subprocess.run(
+            ['git', 'ls-remote', REPO_URL, f'refs/heads/{branch}'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
         
         if result.returncode != 0:
             return None
         
-        # Extract commit hash from output
-        # Format: <commit_hash>    refs/heads/<branch>
+        # Parse output: "commit_hash\trefs/heads/branch"
         output = result.stdout.strip()
-        if output:
-            commit_hash = output.split()[0]
-            return commit_hash
+        if not output:
+            return None
         
-        return None
+        commit_hash = output.split('\t')[0]
+        return commit_hash
+    
     except Exception:
         return None
 
 
-def check_for_updates() -> Dict[str, any]:
-    """Check if there are updates available."""
+def check_for_updates():
+    """Check if updates are available.
+    
+    Returns:
+        dict: Update information with keys:
+            - has_update: bool, True if update available
+            - current_hash: Current commit hash
+            - latest_hash: Latest commit hash
+            - error: Error message if any
+    """
     current_version = get_version()
     current_hash = current_version.get('commit_hash', 'unknown')
     
-    if current_hash == 'unknown':
-        return {
-            'has_update': False,
-            'current_hash': current_hash,
-            'latest_hash': None,
-            'error': 'Cannot determine current version'
-        }
-    
+    # Get latest commit hash
     latest_hash = get_latest_commit_hash()
     
     if latest_hash is None:
@@ -97,10 +133,11 @@ def check_for_updates() -> Dict[str, any]:
             'has_update': False,
             'current_hash': current_hash,
             'latest_hash': None,
-            'error': 'Cannot fetch latest version from repository'
+            'error': 'Could not fetch latest commit hash from repository'
         }
     
-    has_update = latest_hash != current_hash
+    # Compare hashes
+    has_update = current_hash != latest_hash and current_hash != 'unknown'
     
     return {
         'has_update': has_update,

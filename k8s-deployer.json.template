@@ -1,0 +1,13 @@
+{
+  "docker": {
+    "namespace": "loyaltolpi"
+  },
+  "bitbucket": {
+    "organization": "qoin-digital-indonesia",
+    "cicd_path": "cicd/cicd.json"
+  },
+  "deployment": {
+    "use_deployment_field": true
+  }
+}
+

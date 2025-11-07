@@ -172,6 +172,9 @@ if ! command -v uv &> /dev/null; then
     if [[ ":$PATH:" != *":${HOME}/.cargo/bin:"* ]]; then
         export PATH="${HOME}/.cargo/bin:${PATH}"
     fi
+    if [[ ":$PATH:" != *":${HOME}/.local/bin:"* ]]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+    fi
     
     # Source env file if exists (uv installer creates this)
     if [ -f "${HOME}/.local/bin/env" ]; then
@@ -228,6 +231,176 @@ EOF
 
 chmod +x "${WRAPPER_SCRIPT}"
 echo "? Wrapper script dibuat: ${WRAPPER_SCRIPT}"
+
+# Initialize plugin directory structure
+echo "? Initializing plugin directory structure..."
+python3 << 'EOF'
+import os
+import json
+from pathlib import Path
+
+# Create plugin directories
+doq_dir = Path.home() / ".doq"
+plugins_dir = doq_dir / "plugins"
+
+doq_dir.mkdir(parents=True, exist_ok=True)
+plugins_dir.mkdir(parents=True, exist_ok=True)
+
+# Create default plugins.json if not exists
+plugins_file = doq_dir / "plugins.json"
+if not plugins_file.exists():
+    default_plugins = {
+        "version": "1.0",
+        "plugins": [
+            {
+                "name": "devops-ci",
+                "enabled": True,
+                "version": "2.0.1",
+                "module": "plugins.devops_ci",
+                "config_file": "plugins/devops-ci.json",
+                "commands": ["devops-ci"],
+                "description": "DevOps CI/CD Docker image builder"
+            },
+            {
+                "name": "docker-utils",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.docker_utils",
+                "config_file": "plugins/docker-utils.json",
+                "commands": ["image", "get-cicd", "get-file"],
+                "description": "Docker image checking and CI/CD config utilities"
+            },
+            {
+                "name": "web-deployer",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.web_deployer",
+                "config_file": "plugins/web-deployer.json",
+                "commands": ["deploy-web"],
+                "description": "Web application deployment via Docker Compose"
+            },
+            {
+                "name": "k8s-deployer",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.k8s_deployer",
+                "config_file": "plugins/k8s-deployer.json",
+                "commands": ["deploy-k8s"],
+                "description": "Kubernetes application deployment"
+            }
+        ]
+    }
+    with open(plugins_file, 'w') as f:
+        json.dump(default_plugins, f, indent=2)
+    print(f"   Created {plugins_file}")
+
+# Create default devops-ci.json if not exists
+devops_ci_config = plugins_dir / "devops-ci.json"
+if not devops_ci_config.exists():
+    default_config = {
+        "mode": "api",
+        "api": {
+            "url": "http://193.1.1.3:5000",
+            "timeout": 30
+        },
+        "builder": {
+            "name": "container-builder",
+            "memory": "2g",
+            "cpus": "1",
+            "cpu_period": "100000",
+            "cpu_quota": "100000"
+        },
+        "registry": {
+            "url": "",
+            "namespace": "loyaltolpi"
+        },
+        "notification": {
+            "ntfy_url": "https://ntfy.sh/doi-notif",
+            "enabled": True
+        },
+        "helper_mode": {
+            "image_template": "loyaltolpi/{repo}:{refs}-{short_hash}",
+            "default_port": "3000",
+            "default_port2": ""
+        },
+        "build_args": {
+            "registry01_url": "",
+            "gitusertoken": "",
+            "bitbucket_user": "",
+            "github_user": "",
+            "bitbucket_token": "",
+            "github_token": ""
+        }
+    }
+    with open(devops_ci_config, 'w') as f:
+        json.dump(default_config, f, indent=2)
+    print(f"   Created {devops_ci_config}")
+
+# Create default docker-utils.json if not exists
+docker_utils_config = plugins_dir / "docker-utils.json"
+if not docker_utils_config.exists():
+    default_config = {
+        "registry": {
+            "namespace": "loyaltolpi",
+            "default_registry": "docker.io"
+        },
+        "bitbucket": {
+            "org": "loyaltoid",
+            "api_base": "https://api.bitbucket.org/2.0/repositories",
+            "default_cicd_path": "cicd/cicd.json"
+        },
+        "force_build": {
+            "enabled": True,
+            "trigger_command": "devops-ci"
+        }
+    }
+    with open(docker_utils_config, 'w') as f:
+        json.dump(default_config, f, indent=2)
+    print(f"   Created {docker_utils_config}")
+
+# Create default web-deployer.json if not exists
+web_deployer_config = plugins_dir / "web-deployer.json"
+if not web_deployer_config.exists():
+    default_config = {
+        "ssh": {
+            "user": "devops",
+            "key_file": "~/.ssh/id_rsa",
+            "timeout": 30
+        },
+        "docker": {
+            "namespace": "loyaltolpi",
+            "target_port": 3000
+        },
+        "bitbucket": {
+            "org": "loyaltoid",
+            "cicd_path": "cicd/cicd.json"
+        }
+    }
+    with open(web_deployer_config, 'w') as f:
+        json.dump(default_config, f, indent=2)
+    print(f"   Created {web_deployer_config}")
+
+# Create default k8s-deployer.json if not exists
+k8s_deployer_config = plugins_dir / "k8s-deployer.json"
+if not k8s_deployer_config.exists():
+    default_config = {
+        "docker": {
+            "namespace": "loyaltolpi"
+        },
+        "bitbucket": {
+            "organization": "qoin-digital-indonesia",
+            "cicd_path": "cicd/cicd.json"
+        },
+        "deployment": {
+            "use_deployment_field": True
+        }
+    }
+    with open(k8s_deployer_config, 'w') as f:
+        json.dump(default_config, f, indent=2)
+    print(f"   Created {k8s_deployer_config}")
+
+print("? Plugin structure initialized")
+EOF
 
 # Save current commit hash to version file
 if command -v git &> /dev/null; then

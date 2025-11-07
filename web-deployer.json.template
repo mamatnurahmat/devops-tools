@@ -1,0 +1,16 @@
+{
+  "ssh": {
+    "user": "devops",
+    "key_file": "~/.ssh/id_rsa",
+    "timeout": 30
+  },
+  "docker": {
+    "namespace": "loyaltolpi",
+    "target_port": 3000
+  },
+  "bitbucket": {
+    "org": "loyaltoid",
+    "cicd_path": "cicd/cicd.json"
+  }
+}
+
