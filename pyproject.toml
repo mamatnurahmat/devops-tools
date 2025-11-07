@@ -35,6 +35,7 @@ only-include = [
     "plugins/docker_utils.py",
     "plugins/ssh_helper.py",
     "plugins/web_deployer.py",
+    "plugins/k8s_deployer.py",
     "README.md",
 ]
 

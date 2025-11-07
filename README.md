@@ -1118,6 +1118,78 @@ doq deploy-web saas-fe-webadmin development --json
 
 > 📖 **Detailed Documentation**: See [DEPLOY-WEB.md](DEPLOY-WEB.md) for comprehensive guide with flow diagrams and examples.
 
+### Deploy to Kubernetes
+
+Command `doq deploy-k8s` untuk automated deployment ke Kubernetes cluster:
+
+> 📖 **Detailed Documentation**: Lihat [DEPLOY-K8S.md](DEPLOY-K8S.md) untuk comprehensive guide dengan flow diagrams, setup, dan contoh lengkap
+
+```bash
+# Auto mode - uses commit hash
+doq deploy-k8s saas-apigateway develop
+
+# Deploy to staging
+doq deploy-k8s saas-apigateway staging
+
+# Deploy to production
+doq deploy-k8s saas-apigateway production
+
+# Custom image mode
+doq deploy-k8s saas-apigateway develop --image loyaltolpi/saas-apigateway:v1.0.0
+
+# JSON output for automation
+doq deploy-k8s saas-apigateway develop --json
+```
+
+**Deployment Flow:**
+1. **Check Image Status** - Validates image exists in Docker Hub using `doq image`
+2. **Fetch Configuration** - Gets `cicd.json` from Bitbucket for PROJECT and DEPLOYMENT fields
+3. **Determine Namespace** - Constructs namespace as `{refs}-{PROJECT}` (e.g., `develop-saas`)
+4. **Get Current Image** - Checks existing deployment using `doq get-image`
+5. **Compare Images** - Skips deployment if image is the same
+6. **Switch Context** - Uses `doq ns` to switch kubectl context
+7. **Deploy Image** - Updates deployment using `doq set-image`
+
+**Example Output:**
+```
+🔍 Checking image status...
+✅ Image ready: loyaltolpi/saas-apigateway:660cbcf
+🎯 Target: develop-saas / saas-apigateway
+🔍 Checking current deployment...
+🔄 Different image detected
+   Current: loyaltolpi/saas-apigateway:abc1234
+   New: loyaltolpi/saas-apigateway:660cbcf
+🔄 Switching context to develop-saas...
+✅ Context switched
+🚀 Updating deployment...
+✅ Deployment successful!
+```
+
+**Features:**
+- ✅ Image readiness validation before deployment
+- ✅ Smart deployment (skips if same image)
+- ✅ Automatic kubectl context switching
+- ✅ Namespace auto-detection from cicd.json
+- ✅ Custom image support for rollback/testing
+- ✅ Integration with existing doq commands
+
+**Requirements:**
+- `kubectl` installed and configured
+- GIT_USER and GIT_PASSWORD in `~/.doq/auth.json`
+- `cicd/cicd.json` in repository with PROJECT and DEPLOYMENT fields
+
+**cicd.json Example:**
+```json
+{
+  "IMAGE": "saas-apigateway",
+  "CLUSTER": "qoin",
+  "PROJECT": "saas",
+  "DEPLOYMENT": "saas-apigateway",
+  "NODETYPE": "front",
+  "PORT": "8005"
+}
+```
+
 **Auto-Build Feature:**
 ```bash
 # Check and automatically build if not ready
@@ -1171,6 +1243,11 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 - `doq deploy-web <repo> <refs>` - Deploy web app (auto mode with commit hash)
 - `doq deploy-web <repo> <refs> --image <image>` - Deploy with custom image
 - `doq deploy-web <repo> <refs> --json` - Deploy with JSON output
+
+### Kubernetes Deployment
+- `doq deploy-k8s <repo> <refs>` - Deploy to Kubernetes (auto mode with commit hash)
+- `doq deploy-k8s <repo> <refs> --image <image>` - Deploy with custom image
+- `doq deploy-k8s <repo> <refs> --json` - Deploy with JSON output
 
 ### Plugin Management
 - `doq plugin list` - List all installed plugins

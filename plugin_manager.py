@@ -96,6 +96,24 @@ class PluginManager:
                         "config_file": "plugins/docker-utils.json",
                         "commands": ["images", "get-cicd"],
                         "description": "Docker image checking and CI/CD config utilities"
+                    },
+                    {
+                        "name": "web-deployer",
+                        "enabled": True,
+                        "version": "1.0.0",
+                        "module": "plugins.web_deployer",
+                        "config_file": "plugins/web-deployer.json",
+                        "commands": ["deploy-web"],
+                        "description": "Web application deployment via Docker Compose"
+                    },
+                    {
+                        "name": "k8s-deployer",
+                        "enabled": True,
+                        "version": "1.0.0",
+                        "module": "plugins.k8s_deployer",
+                        "config_file": "plugins/k8s-deployer.json",
+                        "commands": ["deploy-k8s"],
+                        "description": "Kubernetes application deployment"
                     }
                 ]
             }

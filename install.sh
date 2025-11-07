@@ -132,6 +132,15 @@ if not plugins_file.exists():
                 "config_file": "plugins/web-deployer.json",
                 "commands": ["deploy-web"],
                 "description": "Web application deployment via Docker Compose"
+            },
+            {
+                "name": "k8s-deployer",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.k8s_deployer",
+                "config_file": "plugins/k8s-deployer.json",
+                "commands": ["deploy-k8s"],
+                "description": "Kubernetes application deployment"
             }
         ]
     }
@@ -224,6 +233,25 @@ if not web_deployer_config.exists():
     with open(web_deployer_config, 'w') as f:
         json.dump(default_config, f, indent=2)
     print(f"   Created {web_deployer_config}")
+
+# Create default k8s-deployer.json if not exists
+k8s_deployer_config = plugins_dir / "k8s-deployer.json"
+if not k8s_deployer_config.exists():
+    default_config = {
+        "docker": {
+            "namespace": "loyaltolpi"
+        },
+        "bitbucket": {
+            "organization": "qoin-digital-indonesia",
+            "cicd_path": "cicd/cicd.json"
+        },
+        "deployment": {
+            "use_deployment_field": True
+        }
+    }
+    with open(k8s_deployer_config, 'w') as f:
+        json.dump(default_config, f, indent=2)
+    print(f"   Created {k8s_deployer_config}")
 
 print("? Plugin structure initialized")
 EOF
