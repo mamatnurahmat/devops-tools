@@ -278,8 +278,8 @@ class DevOpsCIBuilder:
         
         # Check if image already exists (unless rebuild flag is set)
         if not self.rebuild:
-            image_exists = check_docker_image_exists(metadata['image_name'], auth_data, verbose=False)
-            if image_exists:
+            check_result = check_docker_image_exists(metadata['image_name'], auth_data, verbose=False)
+            if check_result['exists']:
                 if not self.short_output:
                     print(f"✅ Image already ready: {metadata['image_name']}. Skipping build.")
                 if self.short_output:
