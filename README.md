@@ -2,6 +2,18 @@
 
 Simple CLI tool untuk mengelola Rancher resources menggunakan Python.
 
+## 📚 Documentation
+
+- **[AUTHENTICATION.md](AUTHENTICATION.md)** - Complete authentication guide
+  - Setup credentials from `~/.netrc` and `~/.docker/config.json`
+  - Auto-creation of `~/.doq/auth.json`
+  - Environment variable fallback
+  - Quick setup scripts
+- **[DEVOPS-CI.md](DEVOPS-CI.md)** - DevOps CI/CD build system
+- **[DOQ-IMAGE.md](DOQ-IMAGE.md)** - Docker image checker
+- **[DEPLOY-WEB.md](DEPLOY-WEB.md)** - Web deployment via Docker Compose
+- **[DEPLOY-K8S.md](DEPLOY-K8S.md)** - Kubernetes deployment
+
 ## Instalasi
 
 ### Quick Install (Cara Tercepat - Recommended)

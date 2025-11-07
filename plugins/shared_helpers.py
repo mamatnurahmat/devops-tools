@@ -13,7 +13,12 @@ BITBUCKET_API_BASE = "https://api.bitbucket.org/2.0/repositories"
 
 
 def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
-    """Centralized auth loading with migration support.
+    """Centralized auth loading with migration support and environment variable fallback.
+    
+    Priority:
+    1. Load from specified auth_file_path or ~/.doq/auth.json
+    2. If file not found, try to load from environment variables
+    3. If credentials found in env, auto-create ~/.doq/auth.json for future use
     
     Args:
         auth_file_path: Optional path to auth.json file
@@ -22,20 +27,60 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
         Dict with authentication credentials
         
     Raises:
-        FileNotFoundError: If auth file not found
+        FileNotFoundError: If auth file and env variables not found
     """
+    import os
+    
     if auth_file_path is None:
         auth_file_path = Path.home() / ".doq" / "auth.json"
     
-    if not auth_file_path.exists():
-        raise FileNotFoundError(f"Authentication file {auth_file_path} not found. Run 'doq login' to configure.")
+    # Try to load from file first
+    if auth_file_path.exists():
+        try:
+            with open(auth_file_path, 'r') as f:
+                auth_data = json.load(f)
+            return auth_data
+        except Exception as e:
+            raise RuntimeError(f"Failed to load authentication: {str(e)}")
     
-    try:
-        with open(auth_file_path, 'r') as f:
-            auth_data = json.load(f)
-        return auth_data
-    except Exception as e:
-        raise RuntimeError(f"Failed to load authentication: {str(e)}")
+    # File not found, try environment variables
+    env_auth = {}
+    env_mappings = {
+        'DOCKERHUB_USER': ['DOCKERHUB_USER', 'REGISTY_USER', 'REGISTRY_USER'],
+        'DOCKERHUB_PASSWORD': ['DOCKERHUB_PASSWORD', 'REGISTY_PASSWORD', 'REGISTRY_PASSWORD'],
+        'GIT_USER': ['GIT_USER', 'BITBUCKET_USER', 'BB_USER'],
+        'GIT_PASSWORD': ['GIT_PASSWORD', 'BITBUCKET_TOKEN', 'BB_PASSWORD'],
+    }
+    
+    for target_key, env_keys in env_mappings.items():
+        for env_key in env_keys:
+            value = os.environ.get(env_key)
+            if value:
+                env_auth[target_key] = value
+                break
+    
+    # If we found credentials in environment, auto-create auth.json
+    if env_auth and len(env_auth) >= 2:  # At least 2 credentials found
+        try:
+            # Ensure directory exists
+            auth_file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create auth.json with found credentials
+            with open(auth_file_path, 'w') as f:
+                json.dump(env_auth, f, indent=2)
+            
+            # Set secure permissions
+            auth_file_path.chmod(0o600)
+            
+            print(f"✅ Auto-created {auth_file_path} from environment variables", file=sys.stderr)
+            return env_auth
+        except Exception as e:
+            # If auto-creation failed, still return env_auth
+            print(f"⚠️  Warning: Could not create {auth_file_path}: {e}", file=sys.stderr)
+            return env_auth
+    
+    # No credentials found anywhere
+    raise FileNotFoundError(f"Authentication file {auth_file_path} not found. Run 'doq login' to configure.")
 
 
 def validate_auth_file() -> Dict[str, Any]:
