@@ -265,15 +265,29 @@ def cmd_get_cicd(args):
     result = fetcher.fetch(args.repo, args.refs, args.json)
     
     if result['success']:
-        if args.json:
-            print(json.dumps(result['data'], indent=2))
-        else:
-            print(f"📦 cicd.json for {args.repo}/{args.refs}:")
-            print()
-            print(json.dumps(result['data'], indent=2))
+        # Always output pure JSON (silent mode)
+        print(json.dumps(result['data'], indent=2))
         sys.exit(0)
     else:
         print(f"❌ Error: {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_get_file(args):
+    """Command handler for 'doq get-file'."""
+    try:
+        # Load auth
+        auth_data = load_auth_file()
+        
+        # Fetch file from Bitbucket
+        file_content = fetch_bitbucket_file(args.repo, args.refs, args.file_path, auth_data)
+        
+        # Output file content directly (silent mode)
+        print(file_content)
+        sys.exit(0)
+        
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -286,17 +300,17 @@ def register_commands(subparsers):
     Args:
         subparsers: The argparse subparsers object
     """
-    # Images command - check Docker image status
-    images_parser = subparsers.add_parser('images',
+    # Image command - check Docker image status
+    image_parser = subparsers.add_parser('image',
                                           help='Check Docker image status in Docker Hub',
                                           description='Check if a Docker image exists in Docker Hub for the given repository and branch/tag')
-    images_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
-    images_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
-    images_parser.add_argument('--json', action='store_true',
+    image_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
+    image_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
+    image_parser.add_argument('--json', action='store_true',
                                help='Output in JSON format')
-    images_parser.add_argument('--force-build', action='store_true',
+    image_parser.add_argument('--force-build', action='store_true',
                                help='Automatically build image if not ready')
-    images_parser.set_defaults(func=cmd_images)
+    image_parser.set_defaults(func=cmd_images)
     
     # Get-cicd command - fetch cicd.json from Bitbucket
     get_cicd_parser = subparsers.add_parser('get-cicd',
@@ -307,5 +321,14 @@ def register_commands(subparsers):
     get_cicd_parser.add_argument('--json', action='store_true',
                                  help='Output in compact JSON format (default is pretty-printed)')
     get_cicd_parser.set_defaults(func=cmd_get_cicd)
+    
+    # Get-file command - fetch any file from Bitbucket
+    get_file_parser = subparsers.add_parser('get-file',
+                                            help='Get any file from Bitbucket repository',
+                                            description='Fetch and display any file content from a Bitbucket repository')
+    get_file_parser.add_argument('repo', help='Repository name (e.g., saas-be-core)')
+    get_file_parser.add_argument('refs', help='Branch or tag name (e.g., develop)')
+    get_file_parser.add_argument('file_path', help='File path in repository (e.g., Dockerfile, README.md, src/main.py)')
+    get_file_parser.set_defaults(func=cmd_get_file)
 
 

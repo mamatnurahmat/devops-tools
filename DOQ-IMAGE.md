@@ -1,4 +1,4 @@
-# DOQ Images - Docker Image Status Checker
+# DOQ Image - Docker Image Status Checker
 
 > **Check Docker image availability in Docker Hub for your repositories**
 
@@ -20,7 +20,7 @@
 
 ## 🎯 Overview
 
-`doq images` adalah command untuk mengecek apakah Docker image untuk repository dan branch/tag tertentu sudah tersedia di Docker Hub. Tool ini sangat berguna untuk:
+`doq image` adalah command untuk mengecek apakah Docker image untuk repository dan branch/tag tertentu sudah tersedia di Docker Hub. Tool ini sangat berguna untuk:
 
 - ✅ Verifikasi image availability sebelum deployment
 - ✅ CI/CD pipeline validation
@@ -72,7 +72,7 @@ File: `~/.doq/auth.json`
 
 ## 🚀 Installation
 
-`doq images` sudah terinstall otomatis sebagai bagian dari `doq` CLI tool:
+`doq image` sudah terinstall otomatis sebagai bagian dari `doq` CLI tool:
 
 ```bash
 # Install doq (if not already installed)
@@ -80,7 +80,7 @@ cd devops-tools
 ./install.sh
 
 # Verify installation
-doq images --help
+doq image --help
 ```
 
 ---
@@ -91,10 +91,10 @@ doq images --help
 
 ```bash
 # Check image status
-doq images <repository> <branch/tag>
+doq image <repository> <branch/tag>
 
 # Example
-doq images saas-apigateway develop
+doq image saas-apigateway develop
 ```
 
 ### Output Example
@@ -117,7 +117,7 @@ doq images saas-apigateway develop
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  USER INPUT: doq images saas-apigateway develop             │
+│  USER INPUT: doq image saas-apigateway develop             │
 └──────────────────────────────────────────────────────────────┘
                           ↓
 ┌──────────────────────────────────────────────────────────────┐
@@ -256,7 +256,7 @@ Two-step process:
 ### Command Syntax
 
 ```bash
-doq images <repo> <refs> [options]
+doq image <repo> <refs> [options]
 ```
 
 ### Arguments
@@ -278,7 +278,7 @@ doq images <repo> <refs> [options]
 #### 1. Check Image Status (Branch)
 
 ```bash
-doq images saas-apigateway develop
+doq image saas-apigateway develop
 ```
 
 **Output (Ready):**
@@ -306,13 +306,13 @@ doq images saas-apigateway develop
 #### 2. Check Image Status (Tag)
 
 ```bash
-doq images saas-apigateway v1.0.0
+doq image saas-apigateway v1.0.0
 ```
 
 #### 3. JSON Output for Automation
 
 ```bash
-doq images saas-apigateway develop --json
+doq image saas-apigateway develop --json
 ```
 
 **Output:**
@@ -327,7 +327,7 @@ doq images saas-apigateway develop --json
 #### 4. Auto-Build if Not Ready
 
 ```bash
-doq images saas-apigateway develop --force-build
+doq image saas-apigateway develop --force-build
 ```
 
 **Behavior:**
@@ -418,9 +418,9 @@ REPO="saas-apigateway"
 BRANCH="develop"
 
 echo "Checking image status for $REPO:$BRANCH..."
-if doq images "$REPO" "$BRANCH" --json | jq -e '.ready == true' > /dev/null; then
+if doq image "$REPO" "$BRANCH" --json | jq -e '.ready == true' > /dev/null; then
     echo "✅ Image is ready, proceeding with deployment"
-    IMAGE=$(doq images "$REPO" "$BRANCH" --json | jq -r '.image')
+    IMAGE=$(doq image "$REPO" "$BRANCH" --json | jq -r '.image')
     kubectl set image deployment/api-gateway api-gateway="$IMAGE"
 else
     echo "❌ Image not ready, aborting deployment"
@@ -434,7 +434,7 @@ fi
 #!/bin/bash
 # Auto-build image if not available
 
-doq images saas-apigateway develop --force-build
+doq image saas-apigateway develop --force-build
 
 # If image was not ready, --force-build will trigger build automatically
 # Script will continue after build completes
@@ -451,7 +451,7 @@ BRANCH="develop"
 
 for repo in "${REPOS[@]}"; do
     echo "Checking $repo..."
-    STATUS=$(doq images "$repo" "$BRANCH" --json | jq -r '.status')
+    STATUS=$(doq image "$repo" "$BRANCH" --json | jq -r '.status')
     echo "  Status: $STATUS"
 done
 ```
@@ -462,7 +462,7 @@ done
 #!/bin/bash
 # Extract image name for use in deployment
 
-IMAGE=$(doq images saas-apigateway develop --json | jq -r '.image')
+IMAGE=$(doq image saas-apigateway develop --json | jq -r '.image')
 echo "Image to deploy: $IMAGE"
 
 # Use in docker-compose.yml or kubernetes manifest
@@ -476,7 +476,7 @@ docker run -d "$IMAGE"
 #!/bin/bash
 # Build only if image doesn't exist
 
-RESULT=$(doq images saas-apigateway develop --json)
+RESULT=$(doq image saas-apigateway develop --json)
 READY=$(echo "$RESULT" | jq -r '.ready')
 
 if [ "$READY" = "false" ]; then
@@ -542,7 +542,7 @@ Add Bitbucket credentials to `~/.doq/auth.json`:
 **Debug Steps:**
 ```bash
 # 1. Check current commit hash
-doq images saas-apigateway develop
+doq image saas-apigateway develop
 
 # 2. Manually check Docker Hub
 # Visit: https://hub.docker.com/r/loyaltolpi/saas-apigateway/tags
@@ -670,7 +670,7 @@ Response: 200 (exists) or 404 (not found)
 
 ```bash
 # Capture exit code
-doq images saas-apigateway develop
+doq image saas-apigateway develop
 if [ $? -eq 0 ]; then
     echo "Image ready"
 else
@@ -692,13 +692,13 @@ fi
 
 ```bash
 # Show help
-doq images --help
+doq image --help
 
 # Plugin info
 doq plugin list
 
 # View logs
-doq images saas-apigateway develop 2>&1 | tee check.log
+doq image saas-apigateway develop 2>&1 | tee check.log
 ```
 
 ### Reporting Issues

@@ -888,17 +888,14 @@ def cmd_get_image(args):
     ns = args.namespace
     deployment = args.deployment
     
-    print(f"?? Getting image information for deployment '{deployment}' in namespace '{ns}'")
+    # Silent mode: no verbose output, JSON only
     
     # First, ensure context is correct
-    print(f"\n?? Ensuring correct context for namespace '{ns}'...")
     selected_context = _switch_context_by_namespace(ns)
     
     if not selected_context:
         print("Error: Failed to switch to correct context", file=sys.stderr)
         sys.exit(1)
-    
-    print(f"? Context verified: {selected_context}")
     
     # Check if kubectl is available
     if not shutil.which('kubectl'):
@@ -907,7 +904,6 @@ def cmd_get_image(args):
         sys.exit(1)
     
     # Get deployment information
-    print(f"\n?? Getting deployment information...")
     try:
         get_result = subprocess.run(
             ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
@@ -930,39 +926,33 @@ def cmd_get_image(args):
             print("Error: No containers found in deployment", file=sys.stderr)
             sys.exit(1)
         
-        # Display image information
-        if args.json:
-            # JSON output
-            images_info = []
-            for container in containers:
-                images_info.append({
-                    'container': container.get('name', 'unknown'),
-                    'image': container.get('image', 'unknown')
-                })
-            output = {
-                'namespace': ns,
-                'deployment': deployment,
-                'context': selected_context,
-                'containers': images_info
-            }
-            print(json.dumps(output, indent=2))
-        else:
-            # Human-readable output
-            print(f"\n? Deployment: {deployment}")
-            print(f"   Namespace: {ns}")
-            print(f"   Context: {selected_context}")
-            print(f"\n📦 Container Images:")
-            print("=" * 60)
+        # Extract image information with tag version
+        images_info = []
+        for container in containers:
+            image_full = container.get('image', 'unknown')
             
-            for container in containers:
-                container_name = container.get('name', 'unknown')
-                image = container.get('image', 'unknown')
-                print(f"  Container: {container_name}")
-                print(f"  Image:     {image}")
-                print()
+            # Parse image to extract tag version
+            # Format: registry/namespace/repo:tag or namespace/repo:tag or repo:tag
+            if ':' in image_full:
+                image_base, tag = image_full.rsplit(':', 1)
+            else:
+                image_base = image_full
+                tag = 'latest'
             
-            if len(containers) == 1:
-                print(f"✅ Current image: {containers[0].get('image', 'unknown')}")
+            images_info.append({
+                'container': container.get('name', 'unknown'),
+                'image': image_full,
+                'tag': tag
+            })
+        
+        # Always output as JSON (silent mode)
+        output = {
+            'namespace': ns,
+            'deployment': deployment,
+            'context': selected_context,
+            'containers': images_info
+        }
+        print(json.dumps(output, indent=2))
         
     except json.JSONDecodeError:
         print("Error: Failed to parse deployment JSON", file=sys.stderr)

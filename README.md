@@ -993,16 +993,16 @@ Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersed
 
 ### Check Docker Image Status
 
-> 📖 **Detailed Documentation**: See [DOQ-IMAGES.md](DOQ-IMAGES.md) for comprehensive guide with flow diagrams and examples.
+> 📖 **Detailed Documentation**: See [DOQ-IMAGE.md](DOQ-IMAGE.md) for comprehensive guide with flow diagrams and examples.
 
-Command `doq images` memungkinkan Anda untuk mengecek apakah Docker image sudah tersedia di Docker Hub:
+Command `doq image` memungkinkan Anda untuk mengecek apakah Docker image sudah tersedia di Docker Hub:
 
 ```bash
 # Check image status
-doq images saas-apigateway develop
+doq image saas-apigateway develop
 
 # Output dengan JSON format
-doq images saas-apigateway develop --json
+doq image saas-apigateway develop --json
 ```
 
 **Output Example:**
@@ -1058,7 +1058,7 @@ doq get-cicd saas-apigateway develop --json
 **Auto-Build Feature:**
 ```bash
 # Check and automatically build if not ready
-doq images saas-apigateway develop --force-build
+doq image saas-apigateway develop --force-build
 
 # If image not ready:
 # 1. Shows current status
@@ -1097,9 +1097,9 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 - `doq devops-ci <repo> <refs> <custom-image>` - Build dengan custom image name
 
 ### DevOps Utilities
-- `doq images <repo> <refs>` - Check Docker image status in Docker Hub
-- `doq images <repo> <refs> --json` - Check image status (JSON output)
-- `doq images <repo> <refs> --force-build` - Check and auto-build if not ready
+- `doq image <repo> <refs>` - Check Docker image status in Docker Hub
+- `doq image <repo> <refs> --json` - Check image status (JSON output)
+- `doq image <repo> <refs> --force-build` - Check and auto-build if not ready
 - `doq get-cicd <repo> <refs>` - Fetch cicd.json from Bitbucket repository
 - `doq get-cicd <repo> <refs> --json` - Fetch cicd.json (compact JSON)
 

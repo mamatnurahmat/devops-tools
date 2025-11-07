@@ -121,7 +121,7 @@ if not plugins_file.exists():
                 "version": "1.0.0",
                 "module": "plugins.docker_utils",
                 "config_file": "plugins/docker-utils.json",
-                "commands": ["images", "get-cicd"],
+                "commands": ["image", "get-cicd", "get-file"],
                 "description": "Docker image checking and CI/CD config utilities"
             }
         ]
