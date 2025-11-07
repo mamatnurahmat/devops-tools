@@ -43,6 +43,23 @@ echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> ~/.bashrc
 doq --help
 ```
 
+### Membuat doq tersedia secara global (user site)
+
+Agar `doq` bisa dipanggil dari direktori manapun dan Python mengenali modul `doq` saat menjalankan `python3 -m doq`, install juga ke user site-packages dan pastikan `~/.local/bin` ada di PATH:
+
+```bash
+# Install ke user site-packages (editable)
+python3 -m pip install --user -e .
+
+# Pastikan ~/.local/bin ada di PATH untuk shell berikutnya (Zsh)
+echo $PATH | tr ':' '\n' | grep -x "$HOME/.local/bin" || \
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+Catatan:
+- Perubahan PATH pada `~/.zshrc` berlaku setelah Anda membuka shell baru atau menjalankan `source ~/.zshrc`.
+- Installer juga mencoba melakukan langkah ini secara otomatis.
+
 **Catatan:** Default instalasi menggunakan direktori user (`~/.local/share/devops-q`) sehingga tidak memerlukan root permission. Jika ingin install ke `/opt` atau lokasi sistem lainnya, gunakan `--prefix` dengan sudo.
 
 ### Metode Instalasi Lainnya

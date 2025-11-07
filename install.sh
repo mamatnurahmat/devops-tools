@@ -215,6 +215,32 @@ uv pip install -q -e . || {
 
 echo "? Dependencies terinstall"
 
+# Install package to user site-packages for global module availability
+echo ""
+echo "? Menginstall package ke user site-packages (global) menggunakan pip..."
+python3 -m pip install --user -e . || {
+    echo "?? Warning: Gagal menginstall dengan 'python3 -m pip install --user -e .'"
+    echo "   Anda masih bisa menggunakan doq via wrapper jika modul tersedia."
+}
+
+# Ensure ~/.local/bin is on PATH for future shells
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "${HOME}/.local/bin"; then
+    # Choose rc file: prefer .zshrc if exists, else .bashrc
+    RC_FILE=""
+    if [ -f "${HOME}/.zshrc" ]; then
+        RC_FILE="${HOME}/.zshrc"
+    elif [ -f "${HOME}/.bashrc" ]; then
+        RC_FILE="${HOME}/.bashrc"
+    else
+        # Default to .bashrc if neither exists
+        RC_FILE="${HOME}/.bashrc"
+    fi
+
+    echo "? Menambahkan ~/.local/bin ke PATH di ${RC_FILE}"
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "${RC_FILE}"
+    echo "   -> Tambahan PATH ditulis ke ${RC_FILE} (restart shell agar aktif)"
+fi
+
 # Create install directory
 mkdir -p "${INSTALL_DIR}"
 echo "? Directory ${INSTALL_DIR} siap"
