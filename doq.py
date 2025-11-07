@@ -294,12 +294,24 @@ def cmd_token_check(args):
             if result['valid']:
                 print("? Token is VALID")
                 
+                # Display user information if available
+                if result.get('username') or result.get('name') or result.get('user_id'):
+                    print()
+                    print("User Information:")
+                    if result.get('username'):
+                        print(f"  Username: {result['username']}")
+                    if result.get('name'):
+                        print(f"  Name: {result['name']}")
+                    if result.get('user_id'):
+                        print(f"  User ID: {result['user_id']}")
+                
                 if result['expires_at']:
                     from datetime import datetime
                     try:
                         exp_time = datetime.fromisoformat(result['expires_at'].replace('Z', '+00:00'))
                         now = datetime.now(exp_time.tzinfo)
                         
+                        print()
                         if result['expired']:
                             print(f"? Token is EXPIRED")
                             print(f"  Expired at: {result['expires_at']}")

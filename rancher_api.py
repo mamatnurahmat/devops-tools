@@ -343,13 +343,16 @@ class RancherAPI:
         """Validate token and check if it's expired.
         
         Returns:
-            dict: Validation result with 'valid', 'expired', 'expires_at', 'error' keys
+            dict: Validation result with 'valid', 'expired', 'expires_at', 'error', 'user_id', 'username', 'name' keys
         """
         result = {
             'valid': False,
             'expired': False,
             'expires_at': None,
-            'error': None
+            'error': None,
+            'user_id': None,
+            'username': None,
+            'name': None
         }
         
         # Try multiple endpoints to validate token
@@ -395,7 +398,7 @@ class RancherAPI:
             result['error'] = 'Unable to validate token - all endpoints returned errors'
             return result
         
-        # Token is valid, now try to get expiry information
+        # Token is valid, now try to get expiry information and user details
         # Method 1: Try to get token info from API
         try:
             # Extract token ID from current token (first part before colon if exists)
@@ -414,6 +417,18 @@ class RancherAPI:
                     now = datetime.now(exp_time.tzinfo)
                     result['expires_at'] = expires_at
                     result['expired'] = exp_time < now
+                except Exception:
+                    pass
+            
+            # Get user information
+            user_id = token_info.get('userId')
+            if user_id:
+                result['user_id'] = user_id
+                try:
+                    user_info = self.get(f'/v3/users/{user_id}')
+                    if isinstance(user_info, dict):
+                        result['username'] = user_info.get('username')
+                        result['name'] = user_info.get('name')
                 except Exception:
                     pass
         except Exception:
