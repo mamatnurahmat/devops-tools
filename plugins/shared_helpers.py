@@ -38,39 +38,91 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
         raise RuntimeError(f"Failed to load authentication: {str(e)}")
 
 
-def check_docker_image_exists(image_name: str, auth_data: Dict[str, str], verbose: bool = False) -> bool:
+def validate_auth_file() -> Dict[str, Any]:
+    """Validate auth.json has required fields.
+    
+    Returns:
+        Dict with:
+        - valid: bool - Whether all required fields are present
+        - missing_fields: list - List of missing field names
+        - message: str - Human-readable validation message
+    """
+    required_fields = {
+        'docker': ['DOCKERHUB_USER', 'DOCKERHUB_PASSWORD'],
+        'bitbucket': ['GIT_USER', 'GIT_PASSWORD']
+    }
+    
+    try:
+        auth_data = load_auth_file()
+    except (FileNotFoundError, RuntimeError):
+        return {
+            'valid': False,
+            'missing_fields': ['DOCKERHUB_USER', 'DOCKERHUB_PASSWORD', 'GIT_USER', 'GIT_PASSWORD'],
+            'message': '~/.doq/auth.json not found or empty'
+        }
+    
+    missing = []
+    for category, fields in required_fields.items():
+        for field in fields:
+            if not auth_data.get(field):
+                missing.append(field)
+    
+    return {
+        'valid': len(missing) == 0,
+        'missing_fields': missing,
+        'message': f'Missing fields: {", ".join(missing)}' if missing else 'All required fields present'
+    }
+
+
+def check_docker_image_exists(image_name: str, auth_data: Dict[str, str], verbose: bool = False) -> Dict[str, Any]:
     """Check if Docker image exists in Docker Hub.
     
     Args:
         image_name: Full image name with tag (e.g. loyaltolpi/repo:tag)
         auth_data: Dict with DOCKERHUB_USER and DOCKERHUB_PASSWORD
-        verbose: If True, print debug messages
+        verbose: If True, print debug messages (deprecated, errors are now in return dict)
         
     Returns:
-        True if image exists, False otherwise
+        Dict with:
+        - exists: bool - Whether the image exists
+        - error: str - Error message if exists=False
+        - error_type: str - Type of error (credentials_missing/auth_failed/not_found/network_timeout/network_error/invalid_format/unknown)
     """
+    result = {
+        'exists': False,
+        'error': None,
+        'error_type': None
+    }
+    
+    # Validate image format
     if ':' not in image_name:
+        result['error'] = f"Invalid image format (missing tag): {image_name}"
+        result['error_type'] = 'invalid_format'
         if verbose:
-            print(f"⚠️  Invalid image format (missing tag): {image_name}", file=sys.stderr)
-        return False
+            print(f"⚠️  {result['error']}", file=sys.stderr)
+        return result
     
     image_base, tag = image_name.rsplit(':', 1)
     if '/' not in image_base:
+        result['error'] = f"Invalid image format (missing namespace): {image_name}"
+        result['error_type'] = 'invalid_format'
         if verbose:
-            print(f"⚠️  Invalid image format (missing namespace): {image_name}", file=sys.stderr)
-        return False
+            print(f"⚠️  {result['error']}", file=sys.stderr)
+        return result
     
     namespace, repo = image_base.split('/', 1)
     
+    # Check credentials
     user = auth_data.get('DOCKERHUB_USER', '')
     password = auth_data.get('DOCKERHUB_PASSWORD', '')
     
     if not user or not password:
+        result['error'] = 'Docker Hub credentials missing in ~/.doq/auth.json'
+        result['error_type'] = 'credentials_missing'
         if verbose:
-            print(f"⚠️  Docker Hub credentials not found in auth.json", file=sys.stderr)
+            print(f"⚠️  {result['error']}", file=sys.stderr)
             print(f"   Required: DOCKERHUB_USER and DOCKERHUB_PASSWORD", file=sys.stderr)
-            print(f"   Unable to verify image existence in Docker Hub", file=sys.stderr)
-        return False
+        return result
     
     # Step 1: Get JWT token from Docker Hub
     try:
@@ -80,32 +132,79 @@ def check_docker_image_exists(image_name: str, auth_data: Dict[str, str], verbos
             timeout=10
         )
         if login_resp.status_code != 200:
+            result['error'] = f'Docker Hub login failed (status: {login_resp.status_code})'
+            result['error_type'] = 'auth_failed'
             if verbose:
-                print(f"⚠️  Docker Hub login failed (status: {login_resp.status_code})", file=sys.stderr)
-            return False
+                print(f"⚠️  {result['error']}", file=sys.stderr)
+            return result
+        
         token = login_resp.json().get('token')
         if not token:
+            result['error'] = 'Docker Hub login failed (no token received)'
+            result['error_type'] = 'auth_failed'
             if verbose:
-                print(f"⚠️  Docker Hub login failed (no token received)", file=sys.stderr)
-            return False
-    except Exception as e:
+                print(f"⚠️  {result['error']}", file=sys.stderr)
+            return result
+            
+    except requests.exceptions.Timeout:
+        result['error'] = 'Docker Hub API timeout - check network connectivity'
+        result['error_type'] = 'network_timeout'
         if verbose:
-            print(f"⚠️  Docker Hub login error: {e}", file=sys.stderr)
-        return False
+            print(f"⚠️  {result['error']}", file=sys.stderr)
+        return result
+    except requests.exceptions.ConnectionError as e:
+        result['error'] = 'Cannot connect to Docker Hub - check network/firewall'
+        result['error_type'] = 'network_error'
+        if verbose:
+            print(f"⚠️  {result['error']}: {e}", file=sys.stderr)
+        return result
+    except Exception as e:
+        result['error'] = f'Docker Hub login error: {str(e)}'
+        result['error_type'] = 'unknown'
+        if verbose:
+            print(f"⚠️  {result['error']}", file=sys.stderr)
+        return result
     
     # Step 2: Check tag existence with Bearer token
     url = f"https://hub.docker.com/v2/repositories/{namespace}/{repo}/tags/{tag}/"
     headers = {"Authorization": f"JWT {token}"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
-        # Only show verbose output if check fails
-        if verbose and resp.status_code != 200:
-            print(f"⚠️  Docker Hub returned status {resp.status_code} for {namespace}/{repo}:{tag}", file=sys.stderr)
-        return resp.status_code == 200
-    except Exception as e:
+        
+        if resp.status_code == 404:
+            result['error'] = 'Image not found in Docker Hub'
+            result['error_type'] = 'not_found'
+            if verbose:
+                print(f"⚠️  {result['error']}: {namespace}/{repo}:{tag}", file=sys.stderr)
+            return result
+        elif resp.status_code == 200:
+            result['exists'] = True
+            return result
+        else:
+            result['error'] = f'Docker Hub returned status {resp.status_code}'
+            result['error_type'] = 'unknown'
+            if verbose:
+                print(f"⚠️  {result['error']} for {namespace}/{repo}:{tag}", file=sys.stderr)
+            return result
+            
+    except requests.exceptions.Timeout:
+        result['error'] = 'Docker Hub API timeout - check network connectivity'
+        result['error_type'] = 'network_timeout'
         if verbose:
-            print(f"⚠️  Error checking image: {e}", file=sys.stderr)
-        return False
+            print(f"⚠️  {result['error']}", file=sys.stderr)
+        return result
+    except requests.exceptions.ConnectionError as e:
+        result['error'] = 'Cannot connect to Docker Hub - check network/firewall'
+        result['error_type'] = 'network_error'
+        if verbose:
+            print(f"⚠️  {result['error']}: {e}", file=sys.stderr)
+        return result
+    except Exception as e:
+        result['error'] = f'Error checking image: {str(e)}'
+        result['error_type'] = 'unknown'
+        if verbose:
+            print(f"⚠️  {result['error']}", file=sys.stderr)
+        return result
 
 
 def fetch_bitbucket_file(repo: str, refs: str, path: str, auth_data: Dict[str, str]) -> str:

@@ -121,7 +121,7 @@ class ImageChecker:
             json_output: If True, output in JSON format
             
         Returns:
-            Dict with 'ready' (bool), 'image' (str), 'exists' (bool)
+            Dict with 'ready' (bool), 'image' (str), 'exists' (bool), and error details if not ready
         """
         try:
             # Load auth
@@ -135,24 +135,46 @@ class ImageChecker:
             namespace = self.config.get('registry.namespace', 'loyaltolpi')
             full_image = f"{namespace}/{repo}:{short_hash}"
             
-            # Check if image exists in Docker Hub
-            exists = check_docker_image_exists(full_image, auth_data, verbose=False)
+            # Check if image exists in Docker Hub (now returns Dict)
+            check_result = check_docker_image_exists(full_image, auth_data, verbose=False)
             
-            return {
-                'ready': exists,
+            result = {
+                'ready': check_result['exists'],
                 'image': full_image,
-                'exists': exists,
+                'exists': check_result['exists'],
                 'repository': repo,
                 'reference': refs,
                 'commit': short_hash
             }
+            
+            # Add error details if not ready
+            if not check_result['exists']:
+                result['error'] = check_result.get('error', 'Unknown error')
+                result['error_type'] = check_result.get('error_type', 'unknown')
+                
+                # Add helpful suggestions based on error type
+                if check_result['error_type'] == 'credentials_missing':
+                    result['suggestion'] = 'Add DOCKERHUB_USER and DOCKERHUB_PASSWORD to ~/.doq/auth.json'
+                elif check_result['error_type'] == 'auth_failed':
+                    result['suggestion'] = 'Check Docker Hub credentials in ~/.doq/auth.json'
+                elif check_result['error_type'] == 'not_found':
+                    result['suggestion'] = f'Build image first: doq devops-ci {repo} {refs}'
+                elif check_result['error_type'] in ['network_timeout', 'network_error']:
+                    result['suggestion'] = 'Check network connectivity and firewall settings'
+                elif check_result['error_type'] == 'invalid_format':
+                    result['suggestion'] = 'Check image name format'
+            
+            return result
             
         except Exception as e:
             return {
                 'ready': False,
                 'image': None,
                 'exists': False,
-                'error': str(e)
+                'error': str(e),
+                'error_type': 'unknown',
+                'repository': repo,
+                'reference': refs
             }
 
 
@@ -206,7 +228,7 @@ class CICDConfigFetcher:
 
 
 def cmd_images(args):
-    """Command handler for 'doq images'."""
+    """Command handler for 'doq image'."""
     checker = ImageChecker()
     result = checker.check(args.repo, args.refs, args.force_build, args.json)
     
@@ -235,27 +257,25 @@ def cmd_images(args):
             print(f"❌ Build failed: {e}", file=sys.stderr)
             sys.exit(1)
     
-    # Output results
-    if args.json:
-        output = {
-            'ready': result['ready'],
-            'image': result.get('image'),
-            'build-image': result.get('image') if not result['ready'] else None
-        }
-        print(json.dumps(output, indent=2))
-    else:
-        # Pretty JSON-like output
-        output = {
-            'repository': result.get('repository', args.repo),
-            'reference': result.get('reference', args.refs),
-            'image': result.get('image'),
-            'ready': result['ready'],
-            'status': 'ready' if result['ready'] else 'not-ready'
-        }
+    # Output results - always JSON format
+    output = {
+        'repository': result.get('repository', args.repo),
+        'reference': result.get('reference', args.refs),
+        'image': result.get('image'),
+        'ready': result['ready'],
+        'status': 'ready' if result['ready'] else 'not-ready'
+    }
+    
+    # Add error details if not ready
+    if not result['ready']:
         if 'error' in result:
             output['error'] = result['error']
-        print(json.dumps(output, indent=2))
+        if 'error_type' in result:
+            output['error_type'] = result['error_type']
+        if 'suggestion' in result:
+            output['suggestion'] = result['suggestion']
     
+    print(json.dumps(output, indent=2))
     sys.exit(0 if result['ready'] else 1)
 
 

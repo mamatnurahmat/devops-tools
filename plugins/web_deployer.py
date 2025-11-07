@@ -294,12 +294,14 @@ services:
                 
                 # Step 3: Check if image exists in Docker Hub
                 print(f"🔍 Checking if image exists in Docker Hub...")
-                image_exists = check_docker_image_exists(full_image, auth_data, verbose=True)
+                check_result = check_docker_image_exists(full_image, auth_data, verbose=False)
                 
-                if not image_exists:
+                if not check_result['exists']:
                     print(f"❌ Error: Image {full_image} not found in Docker Hub", file=sys.stderr)
+                    if check_result.get('error'):
+                        print(f"   Reason: {check_result['error']}", file=sys.stderr)
                     print(f"   Please build the image first using: doq devops-ci {self.repo} {self.refs}", file=sys.stderr)
-                    self.result['message'] = 'Image not found in Docker Hub'
+                    self.result['message'] = check_result.get('error', 'Image not found in Docker Hub')
                     return 1
                 
                 print(f"✅ Image found in Docker Hub")
