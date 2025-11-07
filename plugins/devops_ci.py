@@ -222,7 +222,8 @@ class DevOpsCIBuilder:
     def __init__(self, repo: str = "", refs: str = "", rebuild: bool = False,
                  json_output: bool = False, short_output: bool = False,
                  custom_image: str = "", helper_mode: bool = False,
-                 helper_args: Optional[Dict[str, str]] = None):
+                 helper_args: Optional[Dict[str, str]] = None,
+                 builder_name: Optional[str] = None):
         """Initialize builder with configuration."""
         self.repo = repo
         self.refs = refs
@@ -232,6 +233,7 @@ class DevOpsCIBuilder:
         self.custom_image = custom_image
         self.helper_mode = helper_mode
         self.helper_args = helper_args or {}
+        self.builder_name = builder_name
         
         self.config = BuildConfig()
         self.build_dir = None
@@ -555,9 +557,28 @@ class DevOpsCIBuilder:
             
             build_cmd = [
                 'docker', 'buildx', 'build',
+            ]
+            if self.builder_name:
+                # Validate builder availability
+                inspect = subprocess.run(
+                    ['docker', 'buildx', 'inspect', self.builder_name],
+                    capture_output=True,
+                    text=True
+                )
+                if inspect.returncode != 0:
+                    raise RuntimeError(
+                        f"Buildx builder '{self.builder_name}' tidak ditemukan. "
+                        "Buat terlebih dahulu dengan 'docker buildx create --name "
+                        f"{self.builder_name} --use' lalu bootstrap."
+                    )
+                if not self.short_output:
+                    print(f"   Builder: {self.builder_name}")
+                build_cmd.extend(['--builder', self.builder_name])
+            build_cmd.extend([
                 '-t', metadata['image_name'],
                 '--push'
-            ] + buildx_args
+            ])
+            build_cmd += buildx_args
             
             # Add build args from cicd.json
             if build_config:
@@ -694,7 +715,8 @@ def cmd_devops_ci(args):
         short_output=args.short,
         custom_image=args.custom_image,
         helper_mode=helper_mode,
-        helper_args=helper_args
+        helper_args=helper_args,
+        builder_name=getattr(args, 'use_builder', None)
     )
     
     # Run build
@@ -733,6 +755,8 @@ def register_commands(subparsers):
                                    help='Registry URL for build args (auto-enables helper mode)')
     devops_ci_parser.add_argument('--port',
                                    help='Application port for build args (auto-enables helper mode)')
+    devops_ci_parser.add_argument('--use-builder',
+                                   help='Specify docker buildx builder name to use for the build')
     devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
                                    help='Show detailed DevOps CI help')
     devops_ci_parser.add_argument('--version-devops-ci', action='store_true',
