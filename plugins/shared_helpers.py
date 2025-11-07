@@ -129,6 +129,7 @@ def check_docker_image_exists(image_name: str, auth_data: Dict[str, str], verbos
         login_resp = requests.post(
             'https://hub.docker.com/v2/users/login/',
             json={'username': user, 'password': password},
+            headers={'User-Agent': 'DockerHub-Client/1.0'},
             timeout=10
         )
         if login_resp.status_code == 500:
@@ -176,7 +177,10 @@ def check_docker_image_exists(image_name: str, auth_data: Dict[str, str], verbos
     
     # Step 2: Check tag existence with Bearer token
     url = f"https://hub.docker.com/v2/repositories/{namespace}/{repo}/tags/{tag}/"
-    headers = {"Authorization": f"JWT {token}"}
+    headers = {
+        "Authorization": f"JWT {token}",
+        "User-Agent": "DockerHub-Client/1.0"
+    }
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         
