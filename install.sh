@@ -203,9 +203,10 @@ echo ""
 echo "?? Menginstall dependencies dengan uv..."
 echo "   Working directory: $(pwd)"
 
-# Install project dependencies dengan --system flag untuk non-root user
-# --system installs to user site-packages (~/.local/lib/python3.x/site-packages)
-uv pip install --system -q -e . || {
+# Install project dependencies using UV_LINK_MODE=copy for user installation
+# This avoids permission issues and works in all environments without root
+export UV_LINK_MODE=copy
+uv pip install -q -e . || {
     echo "?? Error: Gagal menginstall dependencies"
     echo "   Pastikan uv sudah terinstall dan tersedia di PATH"
     echo "   Coba jalankan: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
@@ -402,18 +403,19 @@ if not k8s_deployer_config.exists():
 print("? Plugin structure initialized")
 EOF
 
-# Save current commit hash to version file
+# Save current commit hash and branch to version file
 if command -v git &> /dev/null; then
     if git rev-parse --git-dir > /dev/null 2>&1; then
         CURRENT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
         python3 << EOF
 import sys
 import os
 sys.path.insert(0, "${PROJECT_DIR}")
 from version import save_version
-save_version("${CURRENT_COMMIT}")
+save_version("${CURRENT_COMMIT}", "${CURRENT_BRANCH}")
 EOF
-        echo "? Version tracking diupdate: ${CURRENT_COMMIT}"
+        echo "? Version tracking diupdate: ${CURRENT_COMMIT} (${CURRENT_BRANCH})"
     fi
 fi
 
