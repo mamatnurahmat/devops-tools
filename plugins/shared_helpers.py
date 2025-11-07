@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 import requests
+import os
 
 
 # Bitbucket API constants
@@ -336,5 +337,66 @@ def get_commit_hash_from_bitbucket(repo: str, refs: str, auth_data: Dict[str, st
         'full_hash': full_hash,
         'short_hash': short_hash
     }
+
+
+def load_netrc_credentials(machine: str) -> Dict[str, str]:
+    """Load credentials from ~/.netrc file for specified machine.
+    
+    Args:
+        machine: Machine hostname (e.g., 'bitbucket.org', 'github.com')
+        
+    Returns:
+        Dict with 'username' and 'password' keys
+        
+    Raises:
+        FileNotFoundError: If ~/.netrc file doesn't exist
+        ValueError: If credentials for machine not found
+    """
+    netrc_path = Path.home() / ".netrc"
+    
+    if not netrc_path.exists():
+        raise FileNotFoundError(f"~/.netrc file not found. Create it with credentials for {machine}")
+    
+    # Parse .netrc file
+    # Format:
+    # machine bitbucket.org
+    #   login username
+    #   password password
+    username = None
+    password = None
+    current_machine = None
+    
+    try:
+        with open(netrc_path, 'r') as f:
+            lines = f.readlines()
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            
+            if parts[0] == 'machine':
+                current_machine = parts[1]
+            elif parts[0] == 'login' and current_machine == machine:
+                username = parts[1]
+            elif parts[0] == 'password' and current_machine == machine:
+                password = parts[1]
+        
+        if username and password:
+            return {
+                'username': username,
+                'password': password
+            }
+        else:
+            raise ValueError(f"Credentials for machine '{machine}' not found in ~/.netrc")
+            
+    except Exception as e:
+        if isinstance(e, (FileNotFoundError, ValueError)):
+            raise
+        raise RuntimeError(f"Failed to parse ~/.netrc: {str(e)}")
 
 

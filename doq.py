@@ -4,10 +4,13 @@ import argparse
 import getpass
 import sys
 import json
+import subprocess
+from pathlib import Path
 from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
 from plugin_manager import PluginManager
+from plugins.shared_helpers import load_netrc_credentials
 # Plugins are now loaded dynamically via PluginManager
 # No need to import plugin modules directly
 
@@ -1332,6 +1335,103 @@ def cmd_config(args):
         print(f"Insecure: {config['insecure']}")
 
 
+def cmd_clone(args):
+    """Clone Git repository using credentials from ~/.netrc."""
+    try:
+        # Default values
+        machine = args.machine or 'bitbucket.org'
+        org_id = args.org_id or 'loyaltoid'
+        repo = args.repo
+        refs = args.refs
+        
+        if not repo or not refs:
+            print("Error: Repository name and refs (branch/tag) are required", file=sys.stderr)
+            print("Usage: doq clone <repo> <refs> [--machine MACHINE] [--org-id ORG_ID] [--all]", file=sys.stderr)
+            sys.exit(1)
+        
+        # Load credentials from ~/.netrc
+        try:
+            creds = load_netrc_credentials(machine)
+            username = creds['username']
+            password = creds['password']
+        except (FileNotFoundError, ValueError) as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print(f"   Create ~/.netrc with credentials for {machine}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Build Git URL
+        git_url = f"https://{machine}/{org_id}/{repo}.git"
+        
+        # Build URL with credentials embedded
+        # Format: https://username:password@host/path
+        auth_url = f"https://{username}:{password}@{machine}/{org_id}/{repo}.git"
+        
+        print(f"🔍 Cloning repository: {repo}")
+        print(f"   Machine: {machine}")
+        print(f"   Organization: {org_id}")
+        print(f"   Reference: {refs}")
+        print(f"   URL: https://{machine}/{org_id}/{repo}.git")
+        
+        # Check if git is available
+        try:
+            subprocess.run(['git', '--version'], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("❌ Error: git command not found. Please install git.", file=sys.stderr)
+            sys.exit(1)
+        
+        # Clone repository
+        if args.all:
+            # Clone all branches
+            print(f"📦 Cloning all branches...")
+            result = subprocess.run(
+                ['git', 'clone', auth_url, repo],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                print(f"❌ Error cloning repository: {result.stderr}", file=sys.stderr)
+                sys.exit(1)
+            
+            # Checkout the specified refs
+            print(f"🔀 Checking out {refs}...")
+            checkout_result = subprocess.run(
+                ['git', 'checkout', refs],
+                cwd=repo,
+                capture_output=True,
+                text=True
+            )
+            
+            if checkout_result.returncode != 0:
+                print(f"⚠️  Warning: Could not checkout {refs}: {checkout_result.stderr}", file=sys.stderr)
+                print(f"   Repository cloned successfully, but checkout failed.", file=sys.stderr)
+                print(f"   Available branches/tags:", file=sys.stderr)
+                subprocess.run(['git', 'branch', '-a'], cwd=repo)
+                subprocess.run(['git', 'tag'], cwd=repo)
+        else:
+            # Clone single branch
+            print(f"📦 Cloning single branch: {refs}...")
+            result = subprocess.run(
+                ['git', 'clone', '--single-branch', '--branch', refs, auth_url, repo],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                print(f"❌ Error cloning repository: {result.stderr}", file=sys.stderr)
+                sys.exit(1)
+        
+        print(f"✅ Successfully cloned {repo} ({refs})")
+        print(f"   Location: {Path(repo).absolute()}")
+        
+    except KeyboardInterrupt:
+        print("\n❌ Clone cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_plugin_list(args):
     """List all plugins and their status."""
     plugin_manager = PluginManager()
@@ -1611,6 +1711,21 @@ def main():
     kubeconfig_parser.add_argument('--set-context', action='store_true',
                                     help='Set as current context after saving')
     kubeconfig_parser.set_defaults(func=cmd_kube_config, flatten=True)
+    
+    # Clone command
+    clone_parser = subparsers.add_parser('clone', 
+                                         help='Clone Git repository using credentials from ~/.netrc',
+                                         description='Clone Git repositories using HTTPS with credentials from ~/.netrc. '
+                                                   'Default machine is bitbucket.org and default org-id is loyaltoid.')
+    clone_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    clone_parser.add_argument('refs', help='Branch or tag name (e.g., develop, main, v1.0.0)')
+    clone_parser.add_argument('--machine', default='bitbucket.org',
+                              help='Git host machine (default: bitbucket.org)')
+    clone_parser.add_argument('--org-id', default='loyaltoid',
+                              help='Organization ID (default: loyaltoid)')
+    clone_parser.add_argument('--all', action='store_true',
+                              help='Clone all branches instead of single branch (default: single branch only)')
+    clone_parser.set_defaults(func=cmd_clone)
     
     # Register plugin commands dynamically
     plugin_manager.register_plugin_commands(subparsers)
