@@ -123,6 +123,15 @@ if not plugins_file.exists():
                 "config_file": "plugins/docker-utils.json",
                 "commands": ["image", "get-cicd", "get-file"],
                 "description": "Docker image checking and CI/CD config utilities"
+            },
+            {
+                "name": "web-deployer",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.web_deployer",
+                "config_file": "plugins/web-deployer.json",
+                "commands": ["deploy-web"],
+                "description": "Web application deployment via Docker Compose"
             }
         ]
     }
@@ -193,6 +202,28 @@ if not docker_utils_config.exists():
     with open(docker_utils_config, 'w') as f:
         json.dump(default_config, f, indent=2)
     print(f"   Created {docker_utils_config}")
+
+# Create default web-deployer.json if not exists
+web_deployer_config = plugins_dir / "web-deployer.json"
+if not web_deployer_config.exists():
+    default_config = {
+        "ssh": {
+            "user": "devops",
+            "key_file": "~/.ssh/id_rsa",
+            "timeout": 30
+        },
+        "docker": {
+            "namespace": "loyaltolpi",
+            "target_port": 3000
+        },
+        "bitbucket": {
+            "org": "loyaltoid",
+            "cicd_path": "cicd/cicd.json"
+        }
+    }
+    with open(web_deployer_config, 'w') as f:
+        json.dump(default_config, f, indent=2)
+    print(f"   Created {web_deployer_config}")
 
 print("? Plugin structure initialized")
 EOF

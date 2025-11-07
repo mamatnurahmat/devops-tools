@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""Web application deployment plugin using Docker Compose."""
+import json
+import sys
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
+
+from config_utils import load_json_config, get_env_override
+from plugins.shared_helpers import (
+    load_auth_file,
+    fetch_bitbucket_file,
+    get_commit_hash_from_bitbucket,
+    check_docker_image_exists
+)
+from plugins.ssh_helper import (
+    run_remote_command,
+    check_file_exists,
+    read_remote_file,
+    write_remote_file,
+    parse_docker_compose_image,
+    create_remote_directory
+)
+
+
+class WebDeployerConfig:
+    """Configuration manager for web-deployer plugin."""
+    
+    def __init__(self):
+        """Initialize configuration with defaults and overrides."""
+        self.config_dir = Path.home() / ".doq"
+        self.plugin_config_file = self.config_dir / "plugins" / "web-deployer.json"
+        
+        # Load plugin config
+        self.config = self._load_config()
+        
+        # Apply environment variable overrides
+        self._apply_env_overrides()
+    
+    def _load_config(self) -> Dict[str, Any]:
+        """Load configuration from plugin config file."""
+        default_config = {
+            "ssh": {
+                "user": "devops",
+                "key_file": "~/.ssh/id_rsa",
+                "timeout": 30
+            },
+            "docker": {
+                "namespace": "loyaltolpi",
+                "target_port": 3000
+            },
+            "bitbucket": {
+                "org": "loyaltoid",
+                "cicd_path": "cicd/cicd.json"
+            }
+        }
+        
+        # Load from file if exists
+        if self.plugin_config_file.exists():
+            try:
+                file_config = load_json_config(self.plugin_config_file)
+                # Merge with defaults
+                return self._deep_merge(default_config, file_config)
+            except Exception:
+                pass
+        
+        return default_config
+    
+    def _deep_merge(self, base: Dict, override: Dict) -> Dict:
+        """Deep merge two dictionaries."""
+        result = base.copy()
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+    
+    def _apply_env_overrides(self):
+        """Apply environment variable overrides to configuration."""
+        ssh_user = get_env_override("WEB_DEPLOYER_SSH_USER")
+        if ssh_user:
+            self.config["ssh"]["user"] = ssh_user
+        
+        namespace = get_env_override("WEB_DEPLOYER_DOCKER_NAMESPACE")
+        if namespace:
+            self.config["docker"]["namespace"] = namespace
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get configuration value by dot-separated key path."""
+        keys = key.split('.')
+        value = self.config
+        for k in keys:
+            if isinstance(value, dict):
+                value = value.get(k)
+                if value is None:
+                    return default
+            else:
+                return default
+        return value
+
+
+class WebDeployer:
+    """Web application deployer using Docker Compose."""
+    
+    def __init__(self, repo: str, refs: str, custom_image: Optional[str] = None, config: Optional[WebDeployerConfig] = None):
+        """Initialize web deployer.
+        
+        Args:
+            repo: Repository name
+            refs: Branch or tag name
+            custom_image: Custom image name (optional, overrides auto-generated image)
+            config: WebDeployerConfig instance, or None to create new one
+        """
+        self.repo = repo
+        self.refs = refs
+        self.custom_image = custom_image
+        self.config = config or WebDeployerConfig()
+        self.result = {
+            'success': False,
+            'action': 'unknown',
+            'repository': repo,
+            'refs': refs,
+            'environment': None,
+            'host': None,
+            'image': None,
+            'previous_image': None,
+            'message': '',
+            'custom_image_mode': custom_image is not None
+        }
+    
+    def fetch_cicd_config(self, auth_data: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        """Fetch cicd.json from Bitbucket.
+        
+        Args:
+            auth_data: Authentication data with GIT_USER and GIT_PASSWORD
+            
+        Returns:
+            cicd.json content as dict, or None if failed
+        """
+        try:
+            cicd_path = self.config.get('bitbucket.cicd_path', 'cicd/cicd.json')
+            cicd_content = fetch_bitbucket_file(self.repo, self.refs, cicd_path, auth_data)
+            cicd_data = json.loads(cicd_content)
+            return cicd_data
+        except Exception as e:
+            print(f"❌ Error fetching cicd.json: {e}", file=sys.stderr)
+            return None
+    
+    def determine_host(self, cicd_config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], str]:
+        """Determine target host and domain based on refs.
+        
+        Args:
+            cicd_config: cicd.json content
+            
+        Returns:
+            Tuple of (host, domain, environment)
+        """
+        refs_lower = self.refs.lower()
+        
+        # Map refs to environment
+        if refs_lower in ['development', 'develop']:
+            env = 'development'
+            host = cicd_config.get('DEVHOST')
+            domain = cicd_config.get('DEVDOMAIN')
+        elif refs_lower == 'staging':
+            env = 'staging'
+            host = cicd_config.get('STAHOST')
+            domain = cicd_config.get('STADOMAIN')
+        elif refs_lower == 'production' or self._is_tag(self.refs):
+            env = 'production'
+            host = cicd_config.get('PROHOST')
+            domain = cicd_config.get('PRODOMAIN')
+        else:
+            # Default to development for other branches
+            env = 'development'
+            host = cicd_config.get('DEVHOST')
+            domain = cicd_config.get('DEVDOMAIN')
+        
+        return (host, domain, env)
+    
+    def _is_tag(self, refs: str) -> bool:
+        """Check if refs is a tag (starts with v followed by number)."""
+        return refs.startswith('v') and len(refs) > 1 and refs[1].isdigit()
+    
+    def check_remote_image(self, host: str, user: str) -> Optional[str]:
+        """Check current image on remote host.
+        
+        Args:
+            host: Remote host IP
+            user: SSH username
+            
+        Returns:
+            Current image name, or None if not deployed
+        """
+        compose_path = f"~/{self.repo}/docker-compose.yaml"
+        
+        # Check if file exists
+        if not check_file_exists(host, user, compose_path):
+            return None
+        
+        # Read file content
+        content = read_remote_file(host, user, compose_path)
+        if not content:
+            return None
+        
+        # Parse image from YAML
+        image = parse_docker_compose_image(content)
+        return image
+    
+    def generate_docker_compose(self, image_name: str, full_image: str, port: str) -> str:
+        """Generate docker-compose.yaml content.
+        
+        Args:
+            image_name: Image name (service/container name)
+            full_image: Full image name with tag (e.g., loyaltolpi/app:tag or custom/image:tag)
+            port: Published port
+            
+        Returns:
+            docker-compose.yaml content as string
+        """
+        target_port = self.config.get('docker.target_port', 3000)
+        
+        compose_content = f"""name: {image_name}
+
+services:
+  {image_name}:
+    container_name: {image_name}
+    image: {full_image}
+    network_mode: bridge
+    ports:
+      - mode: ingress
+        target: {target_port}
+        published: "{port}"
+        protocol: tcp
+    restart: always
+"""
+        return compose_content
+    
+    def deploy(self) -> int:
+        """Main deployment logic.
+        
+        Returns:
+            Exit code (0 for success, 1 for failure)
+        """
+        try:
+            # Load auth
+            auth_data = load_auth_file()
+            
+            # Step 1: Fetch cicd.json
+            print("🔍 Fetching deployment configuration...")
+            cicd_config = self.fetch_cicd_config(auth_data)
+            if not cicd_config:
+                self.result['message'] = 'Failed to fetch cicd.json'
+                return 1
+            
+            # Extract configuration
+            image_name = cicd_config.get('IMAGE')
+            port = cicd_config.get('PORT')
+            
+            if not image_name or not port:
+                print(f"❌ Error: Missing IMAGE or PORT in cicd.json", file=sys.stderr)
+                self.result['message'] = 'Missing required configuration in cicd.json'
+                return 1
+            
+            # Step 2: Determine target host
+            host, domain, environment = self.determine_host(cicd_config)
+            
+            if not host:
+                print(f"❌ Error: No host configured for environment '{environment}'", file=sys.stderr)
+                self.result['message'] = f'No host configured for {environment}'
+                return 1
+            
+            self.result['environment'] = environment
+            self.result['host'] = host
+            
+            print(f"🎯 Target: {environment} ({host})")
+            
+            # Determine image to use
+            if self.custom_image:
+                # Custom image mode
+                full_image = self.custom_image
+                print(f"📦 Using custom image: {full_image}")
+                
+                # Skip Docker Hub check for custom images (might be from different registry)
+                print(f"ℹ️  Custom image mode - skipping Docker Hub validation")
+            else:
+                # Auto-generated image from commit hash
+                commit_info = get_commit_hash_from_bitbucket(self.repo, self.refs, auth_data)
+                tag = commit_info['short_hash']
+                
+                namespace = self.config.get('docker.namespace', 'loyaltolpi')
+                full_image = f"{namespace}/{image_name}:{tag}"
+                print(f"📦 Image: {full_image}")
+                
+                # Step 3: Check if image exists in Docker Hub
+                print(f"🔍 Checking if image exists in Docker Hub...")
+                image_exists = check_docker_image_exists(full_image, auth_data, verbose=True)
+                
+                if not image_exists:
+                    print(f"❌ Error: Image {full_image} not found in Docker Hub", file=sys.stderr)
+                    print(f"   Please build the image first using: doq devops-ci {self.repo} {self.refs}", file=sys.stderr)
+                    self.result['message'] = 'Image not found in Docker Hub'
+                    return 1
+                
+                print(f"✅ Image found in Docker Hub")
+            
+            self.result['image'] = full_image
+            
+            # Step 4: Check existing deployment
+            ssh_user = self.config.get('ssh.user', 'devops')
+            print(f"🔍 Checking existing deployment on {ssh_user}@{host}...")
+            
+            current_image = self.check_remote_image(host, ssh_user)
+            self.result['previous_image'] = current_image
+            
+            # Step 5: Deploy based on current state
+            if current_image == full_image:
+                # Case A: Same image - skip
+                print(f"✅ Already deployed with same image: {full_image}")
+                self.result['success'] = True
+                self.result['action'] = 'skipped'
+                self.result['message'] = 'Already deployed with same image'
+                return 0
+            
+            # Generate docker-compose.yaml
+            compose_content = self.generate_docker_compose(image_name, full_image, port)
+            compose_path = f"~/{self.repo}/docker-compose.yaml"
+            
+            if current_image is None:
+                # Case B: New deployment
+                print(f"🆕 New deployment to {host}")
+                self.result['action'] = 'deployed'
+                
+                # Create directory
+                print(f"📁 Creating directory ~/{self.repo}...")
+                if not create_remote_directory(host, ssh_user, f"~/{self.repo}"):
+                    print(f"❌ Error: Failed to create directory", file=sys.stderr)
+                    self.result['message'] = 'Failed to create directory'
+                    return 1
+                
+                # Upload docker-compose.yaml
+                print(f"📤 Uploading docker-compose.yaml...")
+                if not write_remote_file(host, ssh_user, compose_path, compose_content):
+                    print(f"❌ Error: Failed to upload docker-compose.yaml", file=sys.stderr)
+                    self.result['message'] = 'Failed to upload docker-compose.yaml'
+                    return 1
+                
+                # Pull and start
+                print(f"🐳 Pulling image...")
+                pull_cmd = f"cd ~/{self.repo} && docker pull {full_image}"
+                success, stdout, stderr = run_remote_command(host, ssh_user, pull_cmd, timeout=300)
+                
+                if not success:
+                    print(f"❌ Error pulling image: {stderr}", file=sys.stderr)
+                    self.result['message'] = f'Failed to pull image: {stderr}'
+                    return 1
+                
+                print(f"🚀 Starting container...")
+                up_cmd = f"cd ~/{self.repo} && docker compose up -d"
+                success, stdout, stderr = run_remote_command(host, ssh_user, up_cmd, timeout=120)
+                
+                if not success:
+                    print(f"❌ Error starting container: {stderr}", file=sys.stderr)
+                    self.result['message'] = f'Failed to start container: {stderr}'
+                    return 1
+                
+                print(f"✅ Deployment successful!")
+                self.result['success'] = True
+                self.result['message'] = 'Deployment successful'
+                return 0
+                
+            else:
+                # Case C: Update existing
+                print(f"🔄 Updating deployment (from {current_image} to {full_image})")
+                self.result['action'] = 'updated'
+                
+                # Upload updated docker-compose.yaml
+                print(f"📤 Updating docker-compose.yaml...")
+                if not write_remote_file(host, ssh_user, compose_path, compose_content):
+                    print(f"❌ Error: Failed to update docker-compose.yaml", file=sys.stderr)
+                    self.result['message'] = 'Failed to update docker-compose.yaml'
+                    return 1
+                
+                # Pull and restart
+                print(f"🐳 Pulling new image...")
+                pull_cmd = f"cd ~/{self.repo} && docker compose pull"
+                success, stdout, stderr = run_remote_command(host, ssh_user, pull_cmd, timeout=300)
+                
+                if not success:
+                    print(f"❌ Error pulling image: {stderr}", file=sys.stderr)
+                    self.result['message'] = f'Failed to pull image: {stderr}'
+                    return 1
+                
+                print(f"🔄 Restarting container...")
+                up_cmd = f"cd ~/{self.repo} && docker compose up -d"
+                success, stdout, stderr = run_remote_command(host, ssh_user, up_cmd, timeout=120)
+                
+                if not success:
+                    print(f"❌ Error restarting container: {stderr}", file=sys.stderr)
+                    self.result['message'] = f'Failed to restart container: {stderr}'
+                    return 1
+                
+                print(f"✅ Update successful!")
+                self.result['success'] = True
+                self.result['message'] = 'Update successful'
+                return 0
+        
+        except Exception as e:
+            print(f"❌ Error during deployment: {e}", file=sys.stderr)
+            self.result['message'] = str(e)
+            return 1
+    
+    def get_result(self) -> Dict[str, Any]:
+        """Get deployment result.
+        
+        Returns:
+            Result dictionary
+        """
+        return self.result
+
+
+def cmd_deploy_web(args):
+    """Command handler for 'doq deploy-web'."""
+    custom_image = getattr(args, 'image', None)
+    deployer = WebDeployer(args.repo, args.refs, custom_image=custom_image)
+    exit_code = deployer.deploy()
+    
+    # Output result as JSON
+    if args.json:
+        result = deployer.get_result()
+        print("\n" + json.dumps(result, indent=2))
+    
+    sys.exit(exit_code)
+
+
+def register_commands(subparsers):
+    """Register web-deployer commands with argparse.
+    
+    This function is called by PluginManager to dynamically register
+    the plugin's commands.
+    
+    Args:
+        subparsers: The argparse subparsers object
+    """
+    # Deploy-web command
+    deploy_web_parser = subparsers.add_parser('deploy-web',
+                                              help='Deploy web application using Docker Compose',
+                                              description='Deploy web application to remote server using Docker Compose based on cicd.json configuration')
+    deploy_web_parser.add_argument('repo', help='Repository name (e.g., saas-fe-webadmin)')
+    deploy_web_parser.add_argument('refs', help='Branch or tag name (e.g., development, staging, production, v1.0.0)')
+    deploy_web_parser.add_argument('--image', type=str, default=None,
+                                   help='Custom Docker image to deploy (e.g., loyaltolpi/myapp:v1.0.0 or registry.io/app:latest)')
+    deploy_web_parser.add_argument('--json', action='store_true',
+                                   help='Output result in JSON format')
+    deploy_web_parser.set_defaults(func=cmd_deploy_web)
+

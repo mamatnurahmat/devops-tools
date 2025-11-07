@@ -460,6 +460,12 @@ DevOps Q sekarang terintegrasi dengan Docker image builder untuk build otomatis 
 
 > 📖 **Detailed Documentation**: Lihat [DEVOPS-CI.md](DEVOPS-CI.md) untuk comprehensive guide dengan contoh lengkap
 
+## Web Application Deployment
+
+DevOps Q menyediakan automated web application deployment menggunakan Docker Compose over SSH dengan smart image management dan environment detection.
+
+> 📖 **Detailed Documentation**: Lihat [DEPLOY-WEB.md](DEPLOY-WEB.md) untuk comprehensive guide dengan contoh lengkap
+
 ### Requirements
 
 - Docker dan Docker Buildx terinstall
@@ -1055,6 +1061,63 @@ doq get-cicd saas-apigateway develop --json
 - ✅ JSON output untuk scripting
 - ✅ Auto-build with `--force-build` flag
 
+### Get Any File from Repository
+
+Command `doq get-file` memungkinkan Anda untuk fetch file apa saja dari Bitbucket repository:
+
+```bash
+# Fetch Dockerfile
+doq get-file saas-apigateway develop Dockerfile
+
+# Fetch any file
+doq get-file saas-apigateway develop package.json
+doq get-file saas-apigateway develop src/config.yaml
+```
+
+### Deploy Web Application
+
+Command `doq deploy-web` untuk automated deployment menggunakan Docker Compose over SSH:
+
+```bash
+# Auto mode - uses commit hash
+doq deploy-web saas-fe-webadmin development
+
+# Custom image mode
+doq deploy-web saas-fe-webadmin development --image loyaltolpi/saas-fe-webadmin:v1.0.0
+
+# Deploy to staging
+doq deploy-web saas-fe-webadmin staging
+
+# Deploy to production
+doq deploy-web saas-fe-webadmin production
+
+# Deploy tagged release
+doq deploy-web saas-fe-webadmin v1.0.0
+
+# Rollback to previous version
+doq deploy-web saas-fe-webadmin production --image loyaltolpi/saas-fe-webadmin:v1.0.0
+
+# JSON output for automation
+doq deploy-web saas-fe-webadmin development --json
+```
+
+**Features:**
+- ✅ Auto-selects host based on branch/tag
+- ✅ Smart deployment (skips if same image)
+- ✅ Creates Docker Compose files automatically
+- ✅ SSH automation for remote execution
+- ✅ Image validation (auto mode)
+- ✅ Custom image support for rollback/testing
+- ✅ Environment detection (dev/staging/prod)
+
+**Requirements:**
+- SSH access to target servers (user: `devops`)
+- SSH key configured (`~/.ssh/id_rsa`)
+- GIT_USER and GIT_PASSWORD in `~/.doq/auth.json`
+- `cicd/cicd.json` in repository with HOST and PORT config
+
+> 📖 **Detailed Documentation**: See [DEPLOY-WEB.md](DEPLOY-WEB.md) for comprehensive guide with flow diagrams and examples.
+
 **Auto-Build Feature:**
 ```bash
 # Check and automatically build if not ready
@@ -1102,6 +1165,12 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 - `doq image <repo> <refs> --force-build` - Check and auto-build if not ready
 - `doq get-cicd <repo> <refs>` - Fetch cicd.json from Bitbucket repository
 - `doq get-cicd <repo> <refs> --json` - Fetch cicd.json (compact JSON)
+- `doq get-file <repo> <refs> <file_path>` - Fetch any file from Bitbucket repository
+
+### Web Deployment
+- `doq deploy-web <repo> <refs>` - Deploy web app (auto mode with commit hash)
+- `doq deploy-web <repo> <refs> --image <image>` - Deploy with custom image
+- `doq deploy-web <repo> <refs> --json` - Deploy with JSON output
 
 ### Plugin Management
 - `doq plugin list` - List all installed plugins
