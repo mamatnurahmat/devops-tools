@@ -131,7 +131,16 @@ def check_docker_image_exists(image_name: str, auth_data: Dict[str, str], verbos
             json={'username': user, 'password': password},
             timeout=10
         )
-        if login_resp.status_code != 200:
+        if login_resp.status_code == 500:
+            result['error'] = f'Docker Hub API error (status: 500) - API may be temporarily unavailable or credentials format incorrect'
+            result['error_type'] = 'auth_failed'
+            if verbose:
+                print(f"⚠️  {result['error']}", file=sys.stderr)
+                print(f"   Try: 1) Verify DOCKERHUB_USER and DOCKERHUB_PASSWORD are correct", file=sys.stderr)
+                print(f"        2) Check if Docker Hub API is accessible", file=sys.stderr)
+                print(f"        3) Ensure password is not a Personal Access Token (use actual password)", file=sys.stderr)
+            return result
+        elif login_resp.status_code != 200:
             result['error'] = f'Docker Hub login failed (status: {login_resp.status_code})'
             result['error_type'] = 'auth_failed'
             if verbose:

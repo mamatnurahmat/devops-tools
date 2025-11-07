@@ -156,7 +156,11 @@ class ImageChecker:
                 if check_result['error_type'] == 'credentials_missing':
                     result['suggestion'] = 'Add DOCKERHUB_USER and DOCKERHUB_PASSWORD to ~/.doq/auth.json'
                 elif check_result['error_type'] == 'auth_failed':
-                    result['suggestion'] = 'Check Docker Hub credentials in ~/.doq/auth.json'
+                    # More detailed suggestion for auth failures
+                    if 'status: 500' in result['error']:
+                        result['suggestion'] = 'Docker Hub API error. Verify: 1) Credentials are correct (username + password, not PAT), 2) Try: curl -X POST https://hub.docker.com/v2/users/login/ -H "Content-Type: application/json" -d \'{"username":"USER","password":"PASS"}\''
+                    else:
+                        result['suggestion'] = 'Check Docker Hub credentials in ~/.doq/auth.json (use actual password, not Personal Access Token)'
                 elif check_result['error_type'] == 'not_found':
                     result['suggestion'] = f'Build image first: doq devops-ci {repo} {refs}'
                 elif check_result['error_type'] in ['network_timeout', 'network_error']:
