@@ -120,6 +120,16 @@ doq devops-ci --help
 
 ### Your First Build
 
+#### Siapkan Docker Buildx Builder (sekali)
+```bash
+# Buat builder dedicated untuk DevOps CI
+docker buildx create --name doq-builder --use
+
+# Bootstrap builder agar fitur BuildKit (attestation, SBOM) aktif
+docker buildx inspect --bootstrap
+```
+> Builder ini dapat dipilih langsung saat build dengan flag `--use-builder doq-builder`.
+
 #### API Mode (Default):
 ```bash
 doq devops-ci saas-be-core develop
@@ -558,6 +568,28 @@ Jika Dockerfile tidak di root directory, pre-clone dulu:
 # Docker build akan jalan dari clone directory
 doq devops-ci my-service develop --helper
 ```
+
+### Scenario 6: Builder Resource Limits (Advanced)
+Untuk workload besar, gunakan builder `docker-container` dengan batas resource:
+
+```bash
+# Buat builder dengan driver docker-container
+docker buildx create --name doq-builder-heavy --driver docker-container --use
+
+# Bootstrap builder agar siap pakai
+docker buildx inspect --bootstrap
+
+# Batasi resource container builder (Docker 20.10+)
+docker update --cpus=4 --memory=6g buildx_buildkit_doq-builder-heavy0
+
+# Jalankan build menggunakan builder tersebut
+doq devops-ci saas-be-core develop --rebuild --use-builder doq-builder-heavy
+```
+
+Tips:
+- Sesuaikan nilai `--cpus` dan `--memory` dengan kapasitas host.
+- Gunakan `docker buildx ls` untuk memastikan builder aktif.
+- Pisahkan builder ringan vs berat (misal `doq-builder`, `doq-builder-heavy`) dan pilih lewat `--use-builder`.
 
 ---
 

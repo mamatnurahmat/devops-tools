@@ -14,38 +14,63 @@ BITBUCKET_ORG = "loyaltoid"
 BITBUCKET_API_BASE = "https://api.bitbucket.org/2.0/repositories"
 
 
-def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
-    """Centralized auth loading with migration support and environment variable fallback.
-    
-    Priority:
-    1. Load from specified auth_file_path or ~/.doq/auth.json
-    2. If file not found, try to load from environment variables
-    3. If credentials found in env, auto-create ~/.doq/auth.json for future use
+def generate_image_name(namespace: str, repo: str, tag: str,
+                        custom_image: Optional[str] = None, image_name_from_cicd: Optional[str] = None) -> str:
+    """Generate Docker image name from components.
     
     Args:
-        auth_file_path: Optional path to auth.json file
+        namespace: Docker namespace (e.g., 'loyaltolpi')
+        repo: Repository name (used as fallback)
+        tag: Image tag (e.g., 'abc1234' for branches or 'v1.0.0' for tags)
+        custom_image: Optional custom image name (can include tag with ':')
+        image_name_from_cicd: Optional image name from cicd.json (overrides repo)
         
     Returns:
-        Dict with authentication credentials
-        
-    Raises:
-        FileNotFoundError: If auth file and env variables not found
+        Full image name with tag (e.g., 'loyaltolpi/repo:abc1234')
     """
-    import os
+    # Handle custom image
+    if custom_image:
+        if ':' in custom_image:
+            # User provided explicit tag - use as-is
+            return custom_image
+        else:
+            # No tag provided - add namespace if needed and append tag
+            image_base = custom_image
+            if '/' in image_base:
+                # Already has namespace
+                return f"{image_base}:{tag}"
+            else:
+                # Add namespace
+                return f"{namespace}/{image_base}:{tag}"
     
-    if auth_file_path is None:
-        auth_file_path = Path.home() / ".doq" / "auth.json"
+    # Use image name from cicd.json if provided, otherwise use repo
+    base_image_name = image_name_from_cicd if image_name_from_cicd else repo
     
-    # Try to load from file first
+    return f"{namespace}/{base_image_name}:{tag}"
+
+
+def _load_auth_from_file(auth_file_path: Path) -> Optional[Dict[str, str]]:
+    """Load auth data from file.
+    
+    Returns:
+        Auth dict if file exists and is valid, None otherwise
+    """
     if auth_file_path.exists():
         try:
             with open(auth_file_path, 'r') as f:
-                auth_data = json.load(f)
-            return auth_data
+                return json.load(f)
         except Exception as e:
             raise RuntimeError(f"Failed to load authentication: {str(e)}")
+    return None
+
+
+def _load_auth_from_env() -> Dict[str, str]:
+    """Load auth data from environment variables.
     
-    # File not found, try environment variables
+    Returns:
+        Dict with found credentials
+    """
+    import os
     env_auth = {}
     env_mappings = {
         'DOCKERHUB_USER': ['DOCKERHUB_USER', 'REGISTY_USER', 'REGISTRY_USER'],
@@ -61,27 +86,16 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
                 env_auth[target_key] = value
                 break
     
-    # If we found credentials in environment, auto-create auth.json
-    if env_auth and len(env_auth) >= 2:  # At least 2 credentials found
-        try:
-            # Ensure directory exists
-            auth_file_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Create auth.json with found credentials
-            with open(auth_file_path, 'w') as f:
-                json.dump(env_auth, f, indent=2)
-            
-            # Set secure permissions
-            auth_file_path.chmod(0o600)
-            
-            print(f"✅ Auto-created {auth_file_path} from environment variables", file=sys.stderr)
-            return env_auth
-        except Exception as e:
-            # If auto-creation failed, still return env_auth
-            print(f"⚠️  Warning: Could not create {auth_file_path}: {e}", file=sys.stderr)
-            return env_auth
+    return env_auth
+
+
+def _load_auth_from_docker() -> Dict[str, str]:
+    """Load Docker Hub credentials from ~/.docker/config.json.
     
-    # Try to load from Docker config (~/.docker/config.json)
+    Returns:
+        Dict with DOCKERHUB_USER and DOCKERHUB_PASSWORD if found
+    """
+    docker_auth = {}
     try:
         docker_config_path = Path.home() / ".docker" / "config.json"
         if docker_config_path.exists():
@@ -103,39 +117,108 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
                             decoded = base64.b64decode(auth_b64).decode('utf-8')
                             if ':' in decoded:
                                 user, pwd = decoded.split(':', 1)
-                                env_auth.setdefault('DOCKERHUB_USER', user)
-                                env_auth.setdefault('DOCKERHUB_PASSWORD', pwd)
+                                docker_auth['DOCKERHUB_USER'] = user
+                                docker_auth['DOCKERHUB_PASSWORD'] = pwd
                                 break
                         except Exception:
                             pass
     except Exception:
         # Ignore docker config parsing errors
         pass
+    return docker_auth
 
-    # Try to load Bitbucket creds from ~/.netrc (default machine: bitbucket.org)
+
+def _load_auth_from_netrc() -> Dict[str, str]:
+    """Load Bitbucket credentials from ~/.netrc.
+    
+    Returns:
+        Dict with GIT_USER and GIT_PASSWORD if found
+    """
+    netrc_auth = {}
     try:
-        from plugins.shared_helpers import load_netrc_credentials  # self import safe at runtime
         netrc_creds = load_netrc_credentials('bitbucket.org')
         if netrc_creds.get('username') and netrc_creds.get('password'):
-            env_auth.setdefault('GIT_USER', netrc_creds['username'])
-            env_auth.setdefault('GIT_PASSWORD', netrc_creds['password'])
+            netrc_auth['GIT_USER'] = netrc_creds['username']
+            netrc_auth['GIT_PASSWORD'] = netrc_creds['password']
     except Exception:
         # Ignore if .netrc missing or cannot parse
         pass
+    return netrc_auth
 
+
+def _persist_auth_file(auth_file_path: Path, auth_data: Dict[str, str], source: str):
+    """Persist auth data to file.
+    
+    Args:
+        auth_file_path: Path to auth.json file
+        auth_data: Auth data to persist
+        source: Source description for logging
+    """
+    try:
+        # Ensure directory exists
+        auth_file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create auth.json with found credentials
+        with open(auth_file_path, 'w') as f:
+            json.dump(auth_data, f, indent=2)
+        
+        # Set secure permissions
+        auth_file_path.chmod(0o600)
+        
+        print(f"✅ Auto-created {auth_file_path} from {source}", file=sys.stderr)
+    except Exception as e:
+        # If auto-creation failed, still continue
+        print(f"⚠️  Warning: Could not create {auth_file_path}: {e}", file=sys.stderr)
+
+
+def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
+    """Centralized auth loading with migration support and environment variable fallback.
+    
+    Priority:
+    1. Load from specified auth_file_path or ~/.doq/auth.json
+    2. If file not found, try to load from environment variables
+    3. If credentials found in env, auto-create ~/.doq/auth.json for future use
+    
+    Args:
+        auth_file_path: Optional path to auth.json file
+        
+    Returns:
+        Dict with authentication credentials
+        
+    Raises:
+        FileNotFoundError: If auth file and env variables not found
+        RuntimeError: If auth file exists but cannot be loaded
+    """
+    if auth_file_path is None:
+        auth_file_path = Path.home() / ".doq" / "auth.json"
+    
+    # Try to load from file first
+    auth_data = _load_auth_from_file(auth_file_path)
+    if auth_data is not None:
+        return auth_data
+    
+    # File not found or invalid, try fallback sources
+    # Start with environment variables
+    env_auth = _load_auth_from_env()
+    
+    # If we found credentials in environment, auto-create auth.json
+    if env_auth and len(env_auth) >= 2:  # At least 2 credentials found
+        _persist_auth_file(auth_file_path, env_auth, "environment variables")
+        return env_auth
+    
+    # Try Docker config
+    docker_auth = _load_auth_from_docker()
+    env_auth.update(docker_auth)
+    
+    # Try netrc
+    netrc_auth = _load_auth_from_netrc()
+    env_auth.update(netrc_auth)
+    
     # If any credentials gathered from docker/netrc, persist and return
     if env_auth and len(env_auth) >= 2:
-        try:
-            auth_file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(auth_file_path, 'w') as f:
-                json.dump(env_auth, f, indent=2)
-            auth_file_path.chmod(0o600)
-            print(f"✅ Auto-created {auth_file_path} from Docker/NETRC credentials", file=sys.stderr)
-            return env_auth
-        except Exception as e:
-            print(f"⚠️  Warning: Could not create {auth_file_path}: {e}", file=sys.stderr)
-            return env_auth
-
+        _persist_auth_file(auth_file_path, env_auth, "Docker/NETRC credentials")
+        return env_auth
+    
     # No credentials found anywhere
     raise FileNotFoundError(
         f"Authentication file {auth_file_path} not found. Configure via 'doq login' or ensure ~/.docker/config.json and ~/.netrc are set."

@@ -4,15 +4,16 @@ Simple CLI tool untuk mengelola Rancher resources menggunakan Python.
 
 ## 📚 Documentation
 
-- **[AUTHENTICATION.md](AUTHENTICATION.md)** - Complete authentication guide
+- **[AUTHENTICATION.md](docs/AUTHENTICATION.md)** - Complete authentication guide
   - Setup credentials from `~/.netrc` and `~/.docker/config.json`
   - Auto-creation of `~/.doq/auth.json`
   - Environment variable fallback
   - Quick setup scripts
-- **[DEVOPS-CI.md](DEVOPS-CI.md)** - DevOps CI/CD build system
-- **[DOQ-IMAGE.md](DOQ-IMAGE.md)** - Docker image checker
-- **[DEPLOY-WEB.md](DEPLOY-WEB.md)** - Web deployment via Docker Compose
-- **[DEPLOY-K8S.md](DEPLOY-K8S.md)** - Kubernetes deployment
+- **[DEVOPS-CI.md](docs/DEVOPS-CI.md)** - DevOps CI/CD build system
+- **[DOQ-IMAGE.md](docs/DOQ-IMAGE.md)** - Docker image checker
+- **[GIT-COMMANDS.md](docs/GIT-COMMANDS.md)** - Git/Bitbucket commands (commit, create-branch, pull-request)
+- **[DEPLOY-WEB.md](docs/DEPLOY-WEB.md)** - Web deployment via Docker Compose
+- **[DEPLOY-K8S.md](docs/DEPLOY-K8S.md)** - Kubernetes deployment
 
 ## Instalasi
 
@@ -255,18 +256,6 @@ doq token-check --url https://rancher.example.com --token <token>
 
 ## Penggunaan
 
-### List Clusters
-
-```bash
-doq cluster
-```
-
-Output JSON:
-
-```bash
-doq cluster --json
-```
-
 ### List Projects
 
 ```bash
@@ -277,24 +266,6 @@ Filter by cluster:
 
 ```bash
 doq project --cluster <cluster-id>
-```
-
-### List Namespaces
-
-```bash
-doq namespace
-```
-
-Filter by project:
-
-```bash
-doq namespace --project <project-id>
-```
-
-Filter by cluster:
-
-```bash
-doq namespace --cluster <cluster-id>
 ```
 
 ### Get Kubeconfig
@@ -580,13 +551,13 @@ Informasi yang ditampilkan:
 
 DevOps Q sekarang terintegrasi dengan Docker image builder untuk build otomatis dari Bitbucket repositories dengan fitur SBOM, provenance attestation, dan resource management.
 
-> 📖 **Detailed Documentation**: Lihat [DEVOPS-CI.md](DEVOPS-CI.md) untuk comprehensive guide dengan contoh lengkap
+> 📖 **Detailed Documentation**: Lihat [DEVOPS-CI.md](docs/DEVOPS-CI.md) untuk comprehensive guide dengan contoh lengkap
 
 ## Web Application Deployment
 
 DevOps Q menyediakan automated web application deployment menggunakan Docker Compose over SSH dengan smart image management dan environment detection.
 
-> 📖 **Detailed Documentation**: Lihat [DEPLOY-WEB.md](DEPLOY-WEB.md) untuk comprehensive guide dengan contoh lengkap
+> 📖 **Detailed Documentation**: Lihat [DEPLOY-WEB.md](docs/DEPLOY-WEB.md) untuk comprehensive guide dengan contoh lengkap
 
 ### Requirements
 
@@ -1121,7 +1092,7 @@ Installer script (`install.sh`) akan otomatis menginstall `uv` jika belum tersed
 
 ### Check Docker Image Status
 
-> 📖 **Detailed Documentation**: See [DOQ-IMAGE.md](DOQ-IMAGE.md) for comprehensive guide with flow diagrams and examples.
+> 📖 **Detailed Documentation**: See [DOQ-IMAGE.md](docs/DOQ-IMAGE.md) for comprehensive guide with flow diagrams and examples.
 
 Command `doq image` memungkinkan Anda untuk mengecek apakah Docker image sudah tersedia di Docker Hub:
 
@@ -1238,13 +1209,13 @@ doq deploy-web saas-fe-webadmin development --json
 - GIT_USER and GIT_PASSWORD in `~/.doq/auth.json`
 - `cicd/cicd.json` in repository with HOST and PORT config
 
-> 📖 **Detailed Documentation**: See [DEPLOY-WEB.md](DEPLOY-WEB.md) for comprehensive guide with flow diagrams and examples.
+> 📖 **Detailed Documentation**: See [DEPLOY-WEB.md](docs/DEPLOY-WEB.md) for comprehensive guide with flow diagrams and examples.
 
 ### Deploy to Kubernetes
 
 Command `doq deploy-k8s` untuk automated deployment ke Kubernetes cluster:
 
-> 📖 **Detailed Documentation**: Lihat [DEPLOY-K8S.md](DEPLOY-K8S.md) untuk comprehensive guide dengan flow diagrams, setup, dan contoh lengkap
+> 📖 **Detailed Documentation**: Lihat [DEPLOY-K8S.md](docs/DEPLOY-K8S.md) untuk comprehensive guide dengan flow diagrams, setup, dan contoh lengkap
 
 ```bash
 # Auto mode - uses commit hash
@@ -1330,9 +1301,7 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 ### Rancher Management
 - `doq login` - Login ke Rancher API
 - `doq token-check` - Cek validitas token
-- `doq cluster` - List clusters
 - `doq project` - List projects
-- `doq namespace` - List namespaces
 - `doq kube-config <project-id>` - Get kubeconfig dari project
 
 ### Kubernetes Resource Management

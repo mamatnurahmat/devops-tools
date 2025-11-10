@@ -10,7 +10,9 @@ from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
 from plugin_manager import PluginManager
-from plugins.shared_helpers import load_netrc_credentials
+from plugins.shared_helpers import load_netrc_credentials, load_auth_file, BITBUCKET_API_BASE, BITBUCKET_ORG
+from plugins.set_image_yaml import update_image_in_repo, ImageUpdateError
+import requests
 # Plugins are now loaded dynamically via PluginManager
 # No need to import plugin modules directly
 
@@ -38,30 +40,6 @@ def print_table(headers, rows):
         print(row_str)
 
 
-def cmd_list_clusters(args):
-    """List clusters."""
-    try:
-        api = RancherAPI()
-        clusters = api.list_clusters()
-        
-        if args.json:
-            import json
-            print(json.dumps(clusters, indent=2))
-        else:
-            rows = []
-            for cluster in clusters:
-                rows.append([
-                    cluster.get('id', ''),
-                    cluster.get('name', ''),
-                    cluster.get('state', ''),
-                    cluster.get('kubernetesVersion', '')
-                ])
-            print_table(['ID', 'Name', 'State', 'Kubernetes Version'], rows)
-    except Exception as e:
-        print(f"Error listing clusters: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
 def cmd_list_projects(args):
     """List projects."""
     import json
@@ -71,8 +49,10 @@ def cmd_list_projects(args):
         api = RancherAPI()
         projects = api.list_projects(cluster_id=args.cluster)
         
-        # Filter by System project name if --system flag is set
-        if args.system:
+        # Default behavior: show only System projects
+        # --all flag shows all projects
+        if not args.all:
+            # Default: filter to System projects only
             projects = [p for p in projects if p.get('name', '').lower() == 'system']
         
         # Get all clusters to map cluster ID to name
@@ -87,10 +67,11 @@ def cmd_list_projects(args):
         
         # Save to file if --save flag is set
         if args.save:
-            # --save requires --system flag
-            if not args.system:
-                print("Error: --save requires --system flag", file=sys.stderr)
-                print("Usage: doq project --system --save", file=sys.stderr)
+            # --save only works with System projects (default)
+            # Cannot use --save with --all
+            if args.all:
+                print("Error: --save only works with System projects", file=sys.stderr)
+                print("Usage: doq project --save", file=sys.stderr)
                 sys.exit(1)
             
             # Ensure .doq directory exists
@@ -123,41 +104,30 @@ def cmd_list_projects(args):
                 cluster_id = project.get('clusterId', '')
                 cluster_name = clusters.get(cluster_id, cluster_id if cluster_id else 'N/A')
                 
-                rows.append([
-                    project.get('id', ''),
-                    project.get('name', ''),
-                    cluster_name,
-                    cluster_id,
-                    project.get('state', '')
-                ])
-            print_table(['ID', 'Name', 'Cluster Name', 'Cluster ID', 'State'], rows)
+                if args.all:
+                    # Detailed output for --all: show ID, Name, Cluster Name, Cluster ID, State
+                    rows.append([
+                        project.get('id', ''),
+                        project.get('name', ''),
+                        cluster_name,
+                        cluster_id,
+                        project.get('state', '')
+                    ])
+                else:
+                    # Output for default: show ID and Cluster Name only
+                    rows.append([
+                        project.get('id', ''),
+                        cluster_name
+                    ])
+            
+            if args.all:
+                # Detailed output for --all
+                print_table(['ID', 'Name', 'Cluster Name', 'Cluster ID', 'State'], rows)
+            else:
+                # Simple output for default
+                print_table(['ID', 'Cluster Name'], rows)
     except Exception as e:
         print(f"Error listing projects: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_list_namespaces(args):
-    """List namespaces."""
-    try:
-        api = RancherAPI()
-        namespaces = api.list_namespaces(project_id=args.project, cluster_id=args.cluster)
-        
-        if args.json:
-            import json
-            print(json.dumps(namespaces, indent=2))
-        else:
-            rows = []
-            for namespace in namespaces:
-                rows.append([
-                    namespace.get('id', ''),
-                    namespace.get('name', ''),
-                    namespace.get('projectId', ''),
-                    namespace.get('clusterId', ''),
-                    namespace.get('state', '')
-                ])
-            print_table(['ID', 'Name', 'Project ID', 'Cluster ID', 'State'], rows)
-    except Exception as e:
-        print(f"Error listing namespaces: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -609,17 +579,23 @@ def _switch_context_by_namespace(ns_input, silent=False):
         return None
 
 
-def cmd_get_cm(args):
-    """Get configmap resource information in JSON format."""
+def _execute_kubectl_get_resource(namespace: str, resource_type: str, resource_name: str = None, 
+                                  error_not_found_msg: str = None, post_process_fn=None) -> None:
+    """Execute kubectl get command for a resource and output JSON.
+    
+    Args:
+        namespace: Kubernetes namespace
+        resource_type: Resource type (e.g., 'configmap', 'secret', 'service', 'deployment')
+        resource_name: Resource name (None for listing all)
+        error_not_found_msg: Custom error message when resource not found
+        post_process_fn: Optional function to process JSON data before output (takes dict, returns dict)
+    """
     import subprocess
     import shutil
     import json
     
-    ns = args.namespace
-    configmap = args.configmap
-    
-    # First, ensure context is correct (silently)
-    selected_context = _switch_context_by_namespace(ns, silent=True)
+    # Ensure context is correct (silently)
+    selected_context = _switch_context_by_namespace(namespace, silent=True)
     
     if not selected_context:
         print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
@@ -630,29 +606,47 @@ def cmd_get_cm(args):
         print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
         sys.exit(1)
     
-    # Get configmap information in JSON format
+    # Build kubectl command
+    cmd = ['kubectl', f'-n={namespace}', 'get', resource_type]
+    if resource_name:
+        cmd.append(resource_name)
+    cmd.extend(['-o', 'json'])
+    
+    # Execute kubectl command
     try:
         get_result = subprocess.run(
-            ['kubectl', f'-n={ns}', 'get', 'configmap', configmap, '-o', 'json'],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30
         )
         
         if get_result.returncode != 0:
+            if error_not_found_msg:
+                error_msg = error_not_found_msg
+            else:
+                resource_display = f"{resource_type} '{resource_name}'" if resource_name else resource_type
+                error_msg = f"{resource_display} not found in namespace '{namespace}'"
+            
             error_output = {
-                "error": f"ConfigMap '{configmap}' not found in namespace '{ns}'",
+                "error": error_msg,
                 "stderr": get_result.stderr.strip() if get_result.stderr else None
             }
             print(json.dumps(error_output, indent=2))
             sys.exit(1)
         
-        # Parse and pretty print JSON
-        configmap_data = json.loads(get_result.stdout)
-        print(json.dumps(configmap_data, indent=2))
+        # Parse JSON
+        resource_data = json.loads(get_result.stdout)
+        
+        # Apply post-processing if provided
+        if post_process_fn:
+            resource_data = post_process_fn(resource_data)
+        
+        # Output JSON
+        print(json.dumps(resource_data, indent=2))
         
     except json.JSONDecodeError:
-        error_output = {"error": "Failed to parse configmap JSON"}
+        error_output = {"error": f"Failed to parse {resource_type} JSON"}
         print(json.dumps(error_output, indent=2), file=sys.stderr)
         sys.exit(1)
     except Exception as e:
@@ -661,49 +655,22 @@ def cmd_get_cm(args):
         sys.exit(1)
 
 
+def cmd_get_cm(args):
+    """Get configmap resource information in JSON format."""
+    _execute_kubectl_get_resource(
+        namespace=args.namespace,
+        resource_type='configmap',
+        resource_name=args.configmap,
+        error_not_found_msg=f"ConfigMap '{args.configmap}' not found in namespace '{args.namespace}'"
+    )
+
+
 def cmd_get_secret(args):
     """Get secret resource information in JSON format with base64 decoded values."""
-    import subprocess
-    import shutil
-    import json
     import base64
     
-    ns = args.namespace
-    secret = args.secret
-    
-    # First, ensure context is correct (silently)
-    selected_context = _switch_context_by_namespace(ns, silent=True)
-    
-    if not selected_context:
-        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
-        sys.exit(1)
-    
-    # Check if kubectl is available
-    if not shutil.which('kubectl'):
-        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
-        sys.exit(1)
-    
-    # Get secret information in JSON format
-    try:
-        get_result = subprocess.run(
-            ['kubectl', f'-n={ns}', 'get', 'secret', secret, '-o', 'json'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if get_result.returncode != 0:
-            error_output = {
-                "error": f"Secret '{secret}' not found in namespace '{ns}'",
-                "stderr": get_result.stderr.strip() if get_result.stderr else None
-            }
-            print(json.dumps(error_output, indent=2))
-            sys.exit(1)
-        
-        # Parse JSON
-        secret_data = json.loads(get_result.stdout)
-        
-        # Decode base64 values in data field
+    def decode_secret_data(secret_data):
+        """Post-process function to decode base64 values in secret data."""
         if 'data' in secret_data and secret_data['data']:
             decoded_data = {}
             for key, value in secret_data['data'].items():
@@ -720,268 +687,192 @@ def cmd_get_secret(args):
             if 'annotations' not in secret_data['metadata']:
                 secret_data['metadata']['annotations'] = {}
             secret_data['metadata']['annotations']['_doq.decoded'] = 'true'
-        
-        # Pretty print JSON
-        print(json.dumps(secret_data, indent=2))
-        
-    except json.JSONDecodeError:
-        error_output = {"error": "Failed to parse secret JSON"}
-        print(json.dumps(error_output, indent=2), file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        error_output = {"error": str(e)}
-        print(json.dumps(error_output, indent=2), file=sys.stderr)
-        sys.exit(1)
+        return secret_data
+    
+    _execute_kubectl_get_resource(
+        namespace=args.namespace,
+        resource_type='secret',
+        resource_name=args.secret,
+        error_not_found_msg=f"Secret '{args.secret}' not found in namespace '{args.namespace}'",
+        post_process_fn=decode_secret_data
+    )
 
 
 def cmd_get_svc(args):
     """Get service resource information in JSON format."""
-    import subprocess
-    import shutil
-    import json
-    
-    ns = args.namespace
-    service = args.service
-    
-    # First, ensure context is correct (silently)
-    selected_context = _switch_context_by_namespace(ns, silent=True)
-    
-    if not selected_context:
-        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
-        sys.exit(1)
-    
-    # Check if kubectl is available
-    if not shutil.which('kubectl'):
-        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
-        sys.exit(1)
-    
-    # Get service information in JSON format
-    try:
-        get_result = subprocess.run(
-            ['kubectl', f'-n={ns}', 'get', 'service', service, '-o', 'json'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if get_result.returncode != 0:
-            error_output = {
-                "error": f"Service '{service}' not found in namespace '{ns}'",
-                "stderr": get_result.stderr.strip() if get_result.stderr else None
-            }
-            print(json.dumps(error_output, indent=2))
-            sys.exit(1)
-        
-        # Parse and pretty print JSON
-        service_data = json.loads(get_result.stdout)
-        print(json.dumps(service_data, indent=2))
-        
-    except json.JSONDecodeError:
-        error_output = {"error": "Failed to parse service JSON"}
-        print(json.dumps(error_output, indent=2), file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        error_output = {"error": str(e)}
-        print(json.dumps(error_output, indent=2), file=sys.stderr)
-        sys.exit(1)
+    _execute_kubectl_get_resource(
+        namespace=args.namespace,
+        resource_type='service',
+        resource_name=args.service,
+        error_not_found_msg=f"Service '{args.service}' not found in namespace '{args.namespace}'"
+    )
 
 
 def cmd_get_deploy(args):
     """Get deployment resource information in JSON format."""
-    import subprocess
-    import shutil
     import json
     
     ns = args.namespace
     deployment = args.deployment
     
-    # First, ensure context is correct (silently)
-    selected_context = _switch_context_by_namespace(ns, silent=True)
-    
-    if not selected_context:
-        print(json.dumps({"error": "Failed to switch to correct context"}, indent=2), file=sys.stderr)
-        sys.exit(1)
-    
-    # Check if kubectl is available
-    if not shutil.which('kubectl'):
-        print(json.dumps({"error": "kubectl is not installed or not in PATH"}, indent=2), file=sys.stderr)
-        sys.exit(1)
-    
-    # Get deployment information in JSON format
-    try:
-        # If --name flag is used, only return deployment names
-        if args.name:
-            if deployment:
-                # If specific deployment is provided, just return the name
-                print(json.dumps([deployment], indent=2))
-            else:
-                # List all deployment names
-                get_result = subprocess.run(
-                    ['kubectl', f'-n={ns}', 'get', 'deployments', '-o', 'json'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if get_result.returncode != 0:
-                    error_output = {
-                        "error": f"Failed to get deployments from namespace '{ns}'",
-                        "stderr": get_result.stderr.strip() if get_result.stderr else None
-                    }
-                    print(json.dumps(error_output, indent=2))
-                    sys.exit(1)
-                
-                # Parse JSON and extract only names
-                deployments_data = json.loads(get_result.stdout)
-                deployment_names = []
-                
-                if 'items' in deployments_data:
-                    for item in deployments_data['items']:
-                        if 'metadata' in item and 'name' in item['metadata']:
-                            deployment_names.append(item['metadata']['name'])
-                
-                # Output as JSON array
-                print(json.dumps(deployment_names, indent=2))
-        else:
-            # If deployment is not provided, list all deployments
-            if not deployment:
-                get_result = subprocess.run(
-                    ['kubectl', f'-n={ns}', 'get', 'deployments', '-o', 'json'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if get_result.returncode != 0:
-                    error_output = {
-                        "error": f"Failed to get deployments from namespace '{ns}'",
-                        "stderr": get_result.stderr.strip() if get_result.stderr else None
-                    }
-                    print(json.dumps(error_output, indent=2))
-                    sys.exit(1)
-                
-                # Parse and pretty print JSON
-                deployments_data = json.loads(get_result.stdout)
-                print(json.dumps(deployments_data, indent=2))
-            else:
-                # Get specific deployment
-                get_result = subprocess.run(
-                    ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if get_result.returncode != 0:
-                    error_output = {
-                        "error": f"Deployment '{deployment}' not found in namespace '{ns}'",
-                        "stderr": get_result.stderr.strip() if get_result.stderr else None
-                    }
-                    print(json.dumps(error_output, indent=2))
-                    sys.exit(1)
-                
-                # Parse and pretty print JSON
-                deployment_data = json.loads(get_result.stdout)
-                print(json.dumps(deployment_data, indent=2))
+    # Special handling for --name flag
+    if args.name:
+        if deployment:
+            # If specific deployment is provided, just return the name
+            print(json.dumps([deployment], indent=2))
+            return
         
-    except json.JSONDecodeError:
-        error_output = {"error": "Failed to parse deployment JSON"}
-        print(json.dumps(error_output, indent=2), file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        error_output = {"error": str(e)}
-        print(json.dumps(error_output, indent=2), file=sys.stderr)
-        sys.exit(1)
+        # List all deployment names
+        def extract_names(deployments_data):
+            """Post-process function to extract only deployment names."""
+            deployment_names = []
+            if 'items' in deployments_data:
+                for item in deployments_data['items']:
+                    if 'metadata' in item and 'name' in item['metadata']:
+                        deployment_names.append(item['metadata']['name'])
+            return deployment_names
+        
+        _execute_kubectl_get_resource(
+            namespace=ns,
+            resource_type='deployments',
+            resource_name=None,
+            error_not_found_msg=f"Failed to get deployments from namespace '{ns}'",
+            post_process_fn=extract_names
+        )
+        return
+    
+    # Regular get deployment(s)
+    if not deployment:
+        # List all deployments
+        _execute_kubectl_get_resource(
+            namespace=ns,
+            resource_type='deployments',
+            resource_name=None,
+            error_not_found_msg=f"Failed to get deployments from namespace '{ns}'"
+        )
+    else:
+        # Get specific deployment
+        _execute_kubectl_get_resource(
+            namespace=ns,
+            resource_type='deployment',
+            resource_name=deployment,
+            error_not_found_msg=f"Deployment '{deployment}' not found in namespace '{ns}'"
+        )
 
 
-def cmd_get_image(args):
-    """Get current image information for deployment in namespace."""
+def _get_deployment_containers(namespace: str, deployment: str, silent: bool = False):
+    """Get container information from a deployment.
+    
+    Args:
+        namespace: Kubernetes namespace
+        deployment: Deployment name
+        silent: If True, suppress verbose output
+        
+    Returns:
+        Tuple of (deployment_data dict, containers list, selected_context str)
+        
+    Raises:
+        SystemExit: If deployment not found or containers not available
+    """
     import subprocess
     import shutil
     import json
     
-    ns = args.namespace
-    deployment = args.deployment
-    
-    # Silent mode: no verbose output, JSON only
-    
-    # First, ensure context is correct
-    selected_context = _switch_context_by_namespace(ns)
+    # Ensure context is correct
+    selected_context = _switch_context_by_namespace(namespace, silent=silent)
     
     if not selected_context:
-        print("Error: Failed to switch to correct context", file=sys.stderr)
+        if not silent:
+            print("Error: Failed to switch to correct context", file=sys.stderr)
         sys.exit(1)
     
     # Check if kubectl is available
     if not shutil.which('kubectl'):
-        print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
-        print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
+        if not silent:
+            print("Error: kubectl is not installed or not in PATH", file=sys.stderr)
+            print("Please install kubectl first: https://kubernetes.io/docs/tasks/tools/", file=sys.stderr)
         sys.exit(1)
     
     # Get deployment information
     try:
         get_result = subprocess.run(
-            ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
+            ['kubectl', f'-n={namespace}', 'get', 'deployment', deployment, '-o', 'json'],
             capture_output=True,
             text=True,
             timeout=30
         )
         
         if get_result.returncode != 0:
-            if get_result.stderr:
+            if get_result.stderr and not silent:
                 print(f"Error getting deployment: {get_result.stderr}", file=sys.stderr)
-            print(f"Error: Deployment '{deployment}' not found in namespace '{ns}'", file=sys.stderr)
+            if not silent:
+                print(f"Error: Deployment '{deployment}' not found in namespace '{namespace}'", file=sys.stderr)
             sys.exit(1)
         
-        # Parse deployment JSON to get container images
+        # Parse deployment JSON to get containers
         deployment_data = json.loads(get_result.stdout)
         containers = deployment_data.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
         
         if not containers:
-            print("Error: No containers found in deployment", file=sys.stderr)
+            if not silent:
+                print("Error: No containers found in deployment", file=sys.stderr)
             sys.exit(1)
         
-        # Extract image information with tag version
-        images_info = []
-        for container in containers:
-            image_full = container.get('image', 'unknown')
-            
-            # Parse image to extract tag version
-            # Format: registry/namespace/repo:tag or namespace/repo:tag or repo:tag
-            if ':' in image_full:
-                image_base, tag = image_full.rsplit(':', 1)
-            else:
-                image_base = image_full
-                tag = 'latest'
-            
-            images_info.append({
-                'container': container.get('name', 'unknown'),
-                'image': image_full,
-                'tag': tag
-            })
-        
-        # Always output as JSON (silent mode)
-        output = {
-            'namespace': ns,
-            'deployment': deployment,
-            'context': selected_context,
-            'containers': images_info
-        }
-        print(json.dumps(output, indent=2))
+        return deployment_data, containers, selected_context
         
     except json.JSONDecodeError:
-        print("Error: Failed to parse deployment JSON", file=sys.stderr)
+        if not silent:
+            print("Error: Failed to parse deployment JSON", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"Error getting deployment info: {e}", file=sys.stderr)
+        if not silent:
+            print(f"Error getting deployment info: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_get_image(args):
+    """Get current image information for deployment in namespace."""
+    import json
+    
+    ns = args.namespace
+    deployment = args.deployment
+    
+    # Get deployment containers
+    deployment_data, containers, selected_context = _get_deployment_containers(ns, deployment, silent=True)
+    
+    # Extract image information with tag version
+    images_info = []
+    for container in containers:
+        image_full = container.get('image', 'unknown')
+        
+        # Parse image to extract tag version
+        # Format: registry/namespace/repo:tag or namespace/repo:tag or repo:tag
+        if ':' in image_full:
+            image_base, tag = image_full.rsplit(':', 1)
+        else:
+            image_base = image_full
+            tag = 'latest'
+        
+        images_info.append({
+            'container': container.get('name', 'unknown'),
+            'image': image_full,
+            'tag': tag
+        })
+    
+    # Always output as JSON (silent mode)
+    output = {
+        'namespace': ns,
+        'deployment': deployment,
+        'context': selected_context,
+        'containers': images_info
+    }
+    print(json.dumps(output, indent=2))
 
 
 def cmd_set_image(args):
     """Set image for deployment in namespace."""
     import subprocess
     import shutil
-    import json
     
     ns = args.namespace
     deployment = args.deployment
@@ -1008,49 +899,22 @@ def cmd_set_image(args):
     
     # Get container name(s) from deployment
     print(f"\n?? Getting container information from deployment '{deployment}'...")
-    try:
-        get_result = subprocess.run(
-            ['kubectl', f'-n={ns}', 'get', 'deployment', deployment, '-o', 'json'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if get_result.returncode != 0:
-            if get_result.stderr:
-                print(f"Error getting deployment: {get_result.stderr}", file=sys.stderr)
-            print(f"Error: Deployment '{deployment}' not found in namespace '{ns}'", file=sys.stderr)
-            sys.exit(1)
-        
-        # Parse deployment JSON to get container names
-        deployment_data = json.loads(get_result.stdout)
-        containers = deployment_data.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
-        
-        if not containers:
-            print("Error: No containers found in deployment", file=sys.stderr)
-            sys.exit(1)
-        
-        container_names = [c.get('name') for c in containers if c.get('name')]
-        
-        if not container_names:
-            print("Error: Could not determine container names from deployment", file=sys.stderr)
-            sys.exit(1)
-        
-        # Use first container if multiple containers exist
-        container_name = container_names[0]
-        
-        if len(container_names) > 1:
-            print(f"?? Multiple containers found: {', '.join(container_names)}")
-            print(f"   Using first container: {container_name}")
-        else:
-            print(f"? Container name: {container_name}")
-        
-    except json.JSONDecodeError:
-        print("Error: Failed to parse deployment JSON", file=sys.stderr)
+    deployment_data, containers, _ = _get_deployment_containers(ns, deployment, silent=False)
+    
+    container_names = [c.get('name') for c in containers if c.get('name')]
+    
+    if not container_names:
+        print("Error: Could not determine container names from deployment", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        print(f"Error getting deployment info: {e}", file=sys.stderr)
-        sys.exit(1)
+    
+    # Use first container if multiple containers exist
+    container_name = container_names[0]
+    
+    if len(container_names) > 1:
+        print(f"?? Multiple containers found: {', '.join(container_names)}")
+        print(f"   Using first container: {container_name}")
+    else:
+        print(f"? Container name: {container_name}")
     
     # Execute kubectl set image command
     # kubectl -n=${ns} set image deployment/${deploy} ${container_name}=${image}
@@ -1086,6 +950,51 @@ def cmd_set_image(args):
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_set_image_yaml(args):
+    """Update image reference inside YAML file in Bitbucket repo."""
+    repo = args.repo
+    refs = args.refs
+    yaml_path = args.yaml_path
+    image = args.image
+    dry_run = args.dry_run
+
+    if not repo or not refs or not yaml_path or not image:
+        print("Error: repo, refs, yaml_path, dan image wajib diisi", file=sys.stderr)
+        sys.exit(1)
+
+    print("?? Updating image in YAML file")
+    print(f"   Repository : {repo}")
+    print(f"   Branch     : {refs}")
+    print(f"   YAML Path  : {yaml_path}")
+    print(f"   New Image  : {image}")
+
+    try:
+        result = update_image_in_repo(repo, refs, yaml_path, image, dry_run=dry_run)
+
+        if result.get('success'):
+            if result.get('skipped'):
+                # Image sudah sesuai, skip update
+                print(f"✅ {result.get('message')}")
+                return
+            elif dry_run:
+                print("✅ Perubahan sukses (dry-run). Tidak ada push dilakukan.")
+            else:
+                print("✅ Image berhasil diperbarui dan dipush.")
+                commit_info = result.get('commit')
+                if commit_info:
+                    print(commit_info)
+        else:
+            print(f"⚠️  {result.get('message')}")
+            sys.exit(1)
+
+    except ImageUpdateError as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error tidak terduga: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1333,6 +1242,616 @@ def cmd_config(args):
         print(f"URL: {config['url'] or '(not set)'}")
         print(f"Token: {'*' * len(config['token']) if config['token'] else '(not set)'}")
         print(f"Insecure: {config['insecure']}")
+
+
+def _detect_ref_type(repo, ref, git_user, git_password):
+    """Detect if ref is a tag or branch and return commit hash."""
+    # Try branch first
+    try:
+        branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{ref}"
+        resp = requests.get(branch_url, auth=(git_user, git_password), timeout=30)
+        if resp.status_code == 200:
+            branch_data = resp.json()
+            commit_hash = branch_data['target']['hash']
+            return {'type': 'branch', 'commit_hash': commit_hash}
+    except Exception:
+        pass
+    
+    # Try tag
+    try:
+        tag_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/tags/{ref}"
+        resp = requests.get(tag_url, auth=(git_user, git_password), timeout=30)
+        if resp.status_code == 200:
+            tag_data = resp.json()
+            commit_hash = tag_data['target']['hash']
+            return {'type': 'tag', 'commit_hash': commit_hash}
+    except Exception:
+        pass
+    
+    return None
+
+
+def _get_branches_for_commit(repo, commit_hash, git_user, git_password):
+    """Get branches that contain the specified commit."""
+    try:
+        branches_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commit/{commit_hash}/branches"
+        resp = requests.get(branches_url, auth=(git_user, git_password), timeout=30)
+        if resp.status_code == 200:
+            branches_data = resp.json()
+            branches = branches_data.get('values', [])
+            # Extract branch names
+            branch_names = [b.get('name', '') for b in branches if b.get('name')]
+            return branch_names
+    except Exception:
+        pass
+    
+    return []
+
+
+def _format_commit_date(commit_date):
+    """Format commit date from ISO format to readable format."""
+    if not commit_date:
+        return 'Unknown date'
+    
+    try:
+        from datetime import datetime
+        # Parse ISO format date
+        if 'T' in commit_date:
+            if commit_date.endswith('Z'):
+                commit_date = commit_date.replace('Z', '+00:00')
+            dt = datetime.fromisoformat(commit_date)
+            return dt.strftime('%a %b %d %H:%M:%S %Y %z')
+        else:
+            return commit_date
+    except Exception:
+        return commit_date
+
+
+def _extract_author_info(author_info):
+    """Extract author name and email from author info."""
+    author_name = None
+    author_email = None
+    
+    # Try to get from author.user object first
+    if 'user' in author_info and author_info['user']:
+        author_name = author_info['user'].get('display_name') or author_info['user'].get('username')
+        author_email = author_info['user'].get('email')
+    
+    # Fallback to author.raw if available (format: "Name <email>")
+    if not author_name and 'raw' in author_info:
+        raw_author = author_info['raw']
+        if '<' in raw_author and '>' in raw_author:
+            # Parse "Name <email>" format
+            parts = raw_author.split('<', 1)
+            author_name = parts[0].strip()
+            author_email = parts[1].rstrip('>').strip()
+        else:
+            author_name = raw_author.strip()
+    
+    return author_name, author_email
+
+
+def _format_commit_json(commit_data, commit_id=None, branch=None):
+    """Format commit data as JSON."""
+    commit_hash = commit_data.get('hash', commit_id or 'unknown')
+    author_info = commit_data.get('author', {})
+    author_name, author_email = _extract_author_info(author_info)
+    commit_date = commit_data.get('date', '')
+    formatted_date = _format_commit_date(commit_date)
+    commit_message = commit_data.get('message', '').strip()
+    
+    result = {
+        'commit': commit_hash,
+        'author': {
+            'name': author_name or 'Unknown',
+            'email': author_email or None
+        },
+        'date': formatted_date,
+        'message': commit_message or '(no commit message)'
+    }
+    
+    if branch:
+        result['branch'] = branch
+    
+    return result
+
+
+def _display_single_commit(commit_data, commit_id=None, json_output=False, branch=None):
+    """Display single commit information."""
+    if json_output:
+        output = _format_commit_json(commit_data, commit_id, branch)
+        print(json.dumps(output, indent=2))
+        return
+    
+    commit_hash = commit_data.get('hash', commit_id or 'unknown')
+    author_info = commit_data.get('author', {})
+    author_name, author_email = _extract_author_info(author_info)
+    commit_date = commit_data.get('date', '')
+    formatted_date = _format_commit_date(commit_date)
+    commit_message = commit_data.get('message', '').strip()
+    
+    print(f"commit {commit_hash}")
+    if branch:
+        print(f"Branch: {branch}")
+    if author_name:
+        if author_email:
+            print(f"Author: {author_name} <{author_email}>")
+        else:
+            print(f"Author: {author_name}")
+    else:
+        print("Author: Unknown")
+    
+    print(f"Date:   {formatted_date}")
+    print()
+    if commit_message:
+        # Split message into lines and display
+        for line in commit_message.split('\n'):
+            print(f"    {line}")
+    else:
+        print("    (no commit message)")
+
+
+def cmd_commit(args):
+    """Display commit information from Bitbucket repository."""
+    repo = args.repo
+    ref = args.ref
+    commit_id = args.commit_id
+    
+    if not repo or not ref:
+        print("Error: Repository name and refs (branch/tag) are required", file=sys.stderr)
+        print("Usage: doq commit <repo> <ref> [commit_id]", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Load authentication
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        git_user = auth_data.get('GIT_USER', '')
+        git_password = auth_data.get('GIT_PASSWORD', '')
+        
+        if not git_user or not git_password:
+            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+            sys.exit(1)
+        
+        if commit_id:
+            # Display single commit
+            commit_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commit/{commit_id}"
+            
+            try:
+                resp = requests.get(commit_url, auth=(git_user, git_password), timeout=30)
+                
+                if resp.status_code == 404:
+                    print(f"❌ Error: Commit '{commit_id}' not found in repository '{repo}'", file=sys.stderr)
+                    print(f"   Check if commit ID is correct and exists in the repository", file=sys.stderr)
+                    sys.exit(1)
+                
+                resp.raise_for_status()
+                commit_data = resp.json()
+                
+                # If ref is a tag, get branch information
+                branch = None
+                if ref:
+                    ref_info = _detect_ref_type(repo, ref, git_user, git_password)
+                    if ref_info and ref_info['type'] == 'tag':
+                        # Get branches that contain this commit
+                        branches = _get_branches_for_commit(repo, commit_data.get('hash', commit_id), git_user, git_password)
+                        if branches:
+                            branch = branches[0]  # Use first branch found
+                
+                _display_single_commit(commit_data, commit_id, json_output=args.json, branch=branch)
+                
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error fetching commit information: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Display last 5 commits
+            # First detect if ref is tag or branch
+            ref_info = _detect_ref_type(repo, ref, git_user, git_password)
+            
+            if not ref_info:
+                print(f"❌ Error: Branch/tag '{ref}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch/tag name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            # If tag, get commit hash and use it to get commits
+            if ref_info['type'] == 'tag':
+                # Get commit details for the tag
+                commit_hash = ref_info['commit_hash']
+                commit_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commit/{commit_hash}"
+                
+                try:
+                    resp = requests.get(commit_url, auth=(git_user, git_password), timeout=30)
+                    resp.raise_for_status()
+                    commit_data = resp.json()
+                    
+                    # Get branches that contain this commit
+                    branches = _get_branches_for_commit(repo, commit_hash, git_user, git_password)
+                    branch = branches[0] if branches else None
+                    
+                    if args.json:
+                        output = _format_commit_json(commit_data, commit_hash, branch)
+                        print(json.dumps(output, indent=2))
+                    else:
+                        _display_single_commit(commit_data, commit_hash, json_output=False, branch=branch)
+                    
+                except requests.exceptions.RequestException as e:
+                    print(f"❌ Error fetching commit information: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                # It's a branch, show last 5 commits
+                commits_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commits/{ref}"
+                
+                try:
+                    resp = requests.get(
+                        commits_url,
+                        auth=(git_user, git_password),
+                        params={'pagelen': 5},
+                        timeout=30
+                    )
+                    
+                    if resp.status_code == 404:
+                        print(f"❌ Error: Branch '{ref}' not found in repository '{repo}'", file=sys.stderr)
+                        print(f"   Check if branch name is correct", file=sys.stderr)
+                        sys.exit(1)
+                    
+                    resp.raise_for_status()
+                    commits_data = resp.json()
+                    commits = commits_data.get('values', [])
+                    
+                    if not commits:
+                        if args.json:
+                            print(json.dumps({'commits': []}, indent=2))
+                        else:
+                            print(f"No commits found for '{ref}' in repository '{repo}'")
+                        return
+                    
+                    if args.json:
+                        # Format as JSON array
+                        commits_json = []
+                        for commit_data in commits:
+                            commits_json.append(_format_commit_json(commit_data))
+                        print(json.dumps({'commits': commits_json}, indent=2))
+                    else:
+                        print(f"Last 5 commits on '{ref}':")
+                        print("=" * 70)
+                        
+                        for i, commit_data in enumerate(commits, 1):
+                            commit_hash = commit_data.get('hash', 'unknown')
+                            short_hash = commit_hash[:7] if len(commit_hash) >= 7 else commit_hash
+                            author_info = commit_data.get('author', {})
+                            author_name, author_email = _extract_author_info(author_info)
+                            commit_date = commit_data.get('date', '')
+                            formatted_date = _format_commit_date(commit_date)
+                            commit_message = commit_data.get('message', '').strip()
+                            # Get first line of commit message
+                            first_line = commit_message.split('\n')[0] if commit_message else '(no commit message)'
+                            
+                            print(f"\n[{i}] {short_hash} - {first_line}")
+                            if author_name:
+                                author_display = f"{author_name} <{author_email}>" if author_email else author_name
+                                print(f"     Author: {author_display}")
+                            else:
+                                print(f"     Author: Unknown")
+                            print(f"     Date:   {formatted_date}")
+                        
+                        print("\n" + "=" * 70)
+                        print(f"Use 'doq commit {repo} {ref} <commit_id>' to view full details of a commit")
+                    
+                except requests.exceptions.RequestException as e:
+                    print(f"❌ Error fetching commits: {e}", file=sys.stderr)
+                    sys.exit(1)
+        
+    except KeyboardInterrupt:
+        print("\n❌ Command cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_create_branch(args):
+    """Create a new branch in Bitbucket repository from source branch."""
+    repo = args.repo
+    src_branch = args.src_branch
+    dest_branch = args.dest_branch
+    
+    if not repo or not src_branch or not dest_branch:
+        print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
+        print("Usage: doq create-branch <repo> <src_branch> <dest_branch>", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Load authentication
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        git_user = auth_data.get('GIT_USER', '')
+        git_password = auth_data.get('GIT_PASSWORD', '')
+        
+        if not git_user or not git_password:
+            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"🔍 Creating branch '{dest_branch}' from '{src_branch}' in repository '{repo}'...")
+        
+        # Step 1: Validate source branch exists and get commit hash
+        src_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{src_branch}"
+        
+        try:
+            resp = requests.get(src_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 404:
+                print(f"❌ Error: Source branch '{src_branch}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            resp.raise_for_status()
+            src_branch_data = resp.json()
+            src_commit_hash = src_branch_data['target']['hash']
+            short_hash = src_commit_hash[:7] if len(src_commit_hash) >= 7 else src_commit_hash
+            
+            print(f"✅ Source branch '{src_branch}' found (commit: {short_hash})")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching source branch: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Step 2: Check if destination branch already exists
+        dest_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{dest_branch}"
+        
+        try:
+            resp = requests.get(dest_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 200:
+                print(f"❌ Error: Destination branch '{dest_branch}' already exists in repository '{repo}'", file=sys.stderr)
+                print(f"   Use a different branch name or delete the existing branch first", file=sys.stderr)
+                sys.exit(1)
+            elif resp.status_code != 404:
+                # If it's not 404, there might be another error
+                resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            # If error is not 404, it's a real error
+            if "404" not in str(e):
+                print(f"❌ Error checking destination branch: {e}", file=sys.stderr)
+                sys.exit(1)
+        
+        # Step 3: Create new branch
+        create_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches"
+        branch_data = {
+            "name": dest_branch,
+            "target": {
+                "hash": src_commit_hash
+            }
+        }
+        
+        try:
+            resp = requests.post(
+                create_branch_url,
+                auth=(git_user, git_password),
+                json=branch_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            
+            if resp.status_code == 201:
+                created_branch = resp.json()
+                created_hash = created_branch.get('target', {}).get('hash', src_commit_hash)
+                created_short_hash = created_hash[:7] if len(created_hash) >= 7 else created_hash
+                
+                print(f"✅ Branch '{dest_branch}' created successfully!")
+                print(f"   Repository: {repo}")
+                print(f"   Source branch: {src_branch}")
+                print(f"   Commit: {created_short_hash}")
+            elif resp.status_code == 409:
+                # Conflict - branch might already exist
+                error_data = resp.json()
+                error_msg = error_data.get('error', {}).get('message', 'Branch already exists')
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                print(f"   Branch '{dest_branch}' might already exist", file=sys.stderr)
+                sys.exit(1)
+            else:
+                resp.raise_for_status()
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error creating branch: {e}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get('error', {}).get('message', str(e))
+                    print(f"   Details: {error_msg}", file=sys.stderr)
+                except Exception:
+                    pass
+            sys.exit(1)
+        
+    except KeyboardInterrupt:
+        print("\n❌ Command cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_pull_request(args):
+    """Create a pull request in Bitbucket repository from source branch to destination branch."""
+    repo = args.repo
+    src_branch = args.src_branch
+    dest_branch = args.dest_branch
+    delete_after_merge = args.delete if hasattr(args, 'delete') else False
+    
+    if not repo or not src_branch or not dest_branch:
+        print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
+        print("Usage: doq pull-request <repo> <src_branch> <dest_branch> [--delete]", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Load authentication
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        git_user = auth_data.get('GIT_USER', '')
+        git_password = auth_data.get('GIT_PASSWORD', '')
+        
+        if not git_user or not git_password:
+            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"🔍 Creating pull request from '{src_branch}' to '{dest_branch}' in repository '{repo}'...")
+        if delete_after_merge:
+            print(f"   ⚠️  Source branch '{src_branch}' will be deleted after merge")
+        
+        # Step 1: Validate source branch exists
+        src_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{src_branch}"
+        
+        try:
+            resp = requests.get(src_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 404:
+                print(f"❌ Error: Source branch '{src_branch}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            resp.raise_for_status()
+            print(f"✅ Source branch '{src_branch}' validated")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error validating source branch: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Step 2: Validate destination branch exists
+        dest_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{dest_branch}"
+        
+        try:
+            resp = requests.get(dest_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 404:
+                print(f"❌ Error: Destination branch '{dest_branch}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            resp.raise_for_status()
+            print(f"✅ Destination branch '{dest_branch}' validated")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error validating destination branch: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Step 3: Create pull request
+        pr_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/pullrequests"
+        pr_data = {
+            "title": f"Merge {src_branch} into {dest_branch}",
+            "source": {
+                "branch": {
+                    "name": src_branch
+                }
+            },
+            "destination": {
+                "branch": {
+                    "name": dest_branch
+                }
+            },
+            "close_source_branch": delete_after_merge
+        }
+        
+        try:
+            resp = requests.post(
+                pr_url,
+                auth=(git_user, git_password),
+                json=pr_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            
+            if resp.status_code == 201:
+                pr_response = resp.json()
+                # Extract PR URL from links.html.href
+                pr_html_url = None
+                if 'links' in pr_response and 'html' in pr_response['links']:
+                    pr_html_url = pr_response['links']['html'].get('href')
+                
+                # Also try alternative location
+                if not pr_html_url and 'links' in pr_response:
+                    # Sometimes it's directly in links
+                    for link_type, link_data in pr_response['links'].items():
+                        if isinstance(link_data, dict) and 'href' in link_data:
+                            if link_type == 'html' or 'html' in str(link_data.get('href', '')):
+                                pr_html_url = link_data['href']
+                                break
+                
+                # Fallback: construct URL manually if not found
+                if not pr_html_url:
+                    pr_id = pr_response.get('id', 'unknown')
+                    pr_html_url = f"https://bitbucket.org/{BITBUCKET_ORG}/{repo}/pull-requests/{pr_id}"
+                
+                print(f"✅ Pull request created successfully!")
+                print(f"   Repository: {repo}")
+                print(f"   Source branch: {src_branch}")
+                print(f"   Destination branch: {dest_branch}")
+                if delete_after_merge:
+                    print(f"   ⚠️  Source branch will be deleted after merge")
+                print(f"   Pull Request URL: {pr_html_url}")
+                
+            elif resp.status_code == 400:
+                # Bad request - might be conflicts or validation errors
+                error_data = resp.json()
+                error_msg = error_data.get('error', {}).get('message', 'Failed to create pull request')
+                error_detail = error_data.get('error', {}).get('detail', {})
+                
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                if error_detail:
+                    if 'source' in error_detail:
+                        print(f"   Source branch issue: {error_detail['source']}", file=sys.stderr)
+                    if 'destination' in error_detail:
+                        print(f"   Destination branch issue: {error_detail['destination']}", file=sys.stderr)
+                sys.exit(1)
+            elif resp.status_code == 409:
+                # Conflict - PR might already exist
+                error_data = resp.json()
+                error_msg = error_data.get('error', {}).get('message', 'Pull request already exists')
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                print(f"   A pull request from '{src_branch}' to '{dest_branch}' might already exist", file=sys.stderr)
+                sys.exit(1)
+            else:
+                resp.raise_for_status()
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error creating pull request: {e}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get('error', {}).get('message', str(e))
+                    print(f"   Details: {error_msg}", file=sys.stderr)
+                except Exception:
+                    pass
+            sys.exit(1)
+        
+    except KeyboardInterrupt:
+        print("\n❌ Command cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_clone(args):
@@ -1618,27 +2137,15 @@ def main():
                                help='Disable insecure mode (enable SSL verification)')
     config_parser.set_defaults(func=cmd_config)
     
-    # List clusters command
-    cluster_parser = subparsers.add_parser('cluster', help='List clusters')
-    cluster_parser.add_argument('--json', action='store_true', help='Output as JSON')
-    cluster_parser.set_defaults(func=cmd_list_clusters)
-    
     # List projects command
-    project_parser = subparsers.add_parser('project', help='List projects')
+    project_parser = subparsers.add_parser('project', help='List projects (default: System projects only)')
+    project_parser.add_argument('--all', action='store_true', 
+                                 help='Show all projects')
     project_parser.add_argument('--cluster', help='Filter by cluster ID')
-    project_parser.add_argument('--system', action='store_true', 
-                                 help='Show only System projects')
     project_parser.add_argument('--save', action='store_true',
-                                 help='Save System projects to $HOME/.doq/project.json (requires --system)')
+                                 help='Save System projects to $HOME/.doq/project.json')
     project_parser.add_argument('--json', action='store_true', help='Output as JSON')
     project_parser.set_defaults(func=cmd_list_projects)
-    
-    # List namespaces command
-    namespace_parser = subparsers.add_parser('namespace', help='List namespaces')
-    namespace_parser.add_argument('--project', help='Filter by project ID')
-    namespace_parser.add_argument('--cluster', help='Filter by cluster ID')
-    namespace_parser.add_argument('--json', action='store_true', help='Output as JSON')
-    namespace_parser.set_defaults(func=cmd_list_namespaces)
     
     # Namespace switch command
     ns_parser = subparsers.add_parser('ns', 
@@ -1656,7 +2163,17 @@ def main():
     set_image_parser.add_argument('deployment', help='Deployment name')
     set_image_parser.add_argument('image', help='Image URL/tag (e.g., nginx:1.20 or registry.example.com/app:v1.0)')
     set_image_parser.set_defaults(func=cmd_set_image)
-    
+
+    set_image_yaml_parser = subparsers.add_parser('set-image-yaml',
+                                                  help='Update image field inside YAML file in Bitbucket repo',
+                                                  description='Clone repository, update YAML image field, commit, dan push ke branch yang sama.')
+    set_image_yaml_parser.add_argument('repo', help='Repository name (contoh: saas-apigateway)')
+    set_image_yaml_parser.add_argument('refs', help='Branch target (contoh: develop)')
+    set_image_yaml_parser.add_argument('yaml_path', help='Lokasi file YAML relatif terhadap root repo')
+    set_image_yaml_parser.add_argument('image', help='Image baru (contoh: loyaltolpi/api:fc0bd25)')
+    set_image_yaml_parser.add_argument('--dry-run', action='store_true', help='Hanya simulasi perubahan tanpa commit/push')
+    set_image_yaml_parser.set_defaults(func=cmd_set_image_yaml)
+
     # Get image command
     get_image_parser = subparsers.add_parser('get-image',
                                              help='Get current image information for deployment in namespace',
@@ -1726,6 +2243,40 @@ def main():
     clone_parser.add_argument('--all', action='store_true',
                               help='Clone all branches instead of single branch (default: single branch only)')
     clone_parser.set_defaults(func=cmd_clone)
+    
+    # Commit command
+    commit_parser = subparsers.add_parser('commit',
+                                         help='Display commit information from Bitbucket repository',
+                                         description='Display commit information (timestamp, author name & email, commit message) from Bitbucket. '
+                                                   'If commit_id is provided, shows details of that commit. '
+                                                   'If omitted, shows last 5 commits from the specified branch/tag.')
+    commit_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    commit_parser.add_argument('ref', help='Branch or tag name (e.g., develop, main, v1.0.0)')
+    commit_parser.add_argument('commit_id', nargs='?', help='Short commit ID (e.g., abc1234). If omitted, shows last 5 commits.')
+    commit_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    commit_parser.set_defaults(func=cmd_commit)
+    
+    # Create branch command
+    create_branch_parser = subparsers.add_parser('create-branch',
+                                                 help='Create a new branch in Bitbucket repository from source branch',
+                                                 description='Create a new branch in Bitbucket repository from an existing source branch. '
+                                                           'The new branch will point to the same commit as the source branch.')
+    create_branch_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    create_branch_parser.add_argument('src_branch', help='Source branch name (e.g., develop, main)')
+    create_branch_parser.add_argument('dest_branch', help='Destination branch name (new branch to create)')
+    create_branch_parser.set_defaults(func=cmd_create_branch)
+    
+    # Pull request command
+    pull_request_parser = subparsers.add_parser('pull-request',
+                                                help='Create a pull request in Bitbucket repository',
+                                                description='Create a pull request from source branch to destination branch. '
+                                                          'Use --delete flag to delete source branch after merge.')
+    pull_request_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    pull_request_parser.add_argument('src_branch', help='Source branch name (e.g., feature-branch)')
+    pull_request_parser.add_argument('dest_branch', help='Destination branch name (e.g., develop, main)')
+    pull_request_parser.add_argument('--delete', action='store_true', default=False,
+                                     help='Delete source branch after merge (default: False)')
+    pull_request_parser.set_defaults(func=cmd_pull_request)
     
     # Register plugin commands dynamically
     plugin_manager.register_plugin_commands(subparsers)
