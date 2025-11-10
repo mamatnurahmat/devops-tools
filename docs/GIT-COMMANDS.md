@@ -12,6 +12,7 @@
   - [doq commit](#doq-commit)
   - [doq create-branch](#doq-create-branch)
   - [doq pull-request](#doq-pull-request)
+  - [doq merge](#doq-merge)
 - [Examples](#examples)
 - [Troubleshooting](#troubleshooting)
 - [API References](#api-references)
@@ -25,6 +26,7 @@ Git Commands module provides three powerful commands to interact with Bitbucket 
 - **`doq commit`** - View commit information and history
 - **`doq create-branch`** - Create new branches from existing branches
 - **`doq pull-request`** - Create pull requests with optional branch deletion
+- **`doq merge`** - Merge pull requests automatically from PR URL
 
 These commands streamline Git workflow operations without requiring local repository clones or manual Git operations.
 
@@ -95,6 +97,9 @@ doq pull-request saas-apigateway feature/new-feature develop
 
 # Create PR and delete source branch after merge
 doq pull-request saas-apigateway feature/new-feature develop --delete
+
+# Merge pull request
+doq merge https://bitbucket.org/loyaltoid/saas-apigateway/pull-requests/123
 ```
 
 ---
@@ -356,6 +361,113 @@ Output:
 
 ---
 
+### doq merge
+
+Merge a pull request automatically from Bitbucket PR URL.
+
+#### Usage
+
+```bash
+doq merge <pr_url> [--delete]
+```
+
+#### Arguments
+
+- `pr_url` - Pull request URL (e.g., `https://bitbucket.org/loyaltoid/repo/pull-requests/123`)
+- `--delete` - (Optional) Delete source branch after merge (default: False)
+
+#### Features
+
+- **URL Parsing**: Automatically extracts repository and PR ID from URL
+- **State Validation**: Checks if PR is already merged or declined
+- **Automatic Merge**: Merges PR with single command
+- **Branch Management**: Optional deletion of source branch after merge
+- **Merge Commit**: Returns merge commit hash
+
+#### Examples
+
+**Merge Pull Request:**
+
+```bash
+doq merge https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/483
+```
+
+Output:
+```
+🔍 Merging pull request #483 in repository 'gitops-k8s'...
+✅ Pull request validated
+   Source branch: staging-qoinplus/plus-apigateway_deployment.yaml
+   Destination branch: master
+✅ Pull request #483 merged successfully!
+   Repository: gitops-k8s
+   Source branch: staging-qoinplus/plus-apigateway_deployment.yaml
+   Destination branch: master
+   Merge commit: a1b2c3d
+```
+
+**Merge Pull Request with Branch Deletion:**
+
+```bash
+doq merge https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/483 --delete
+```
+
+Output:
+```
+🔍 Merging pull request #483 in repository 'gitops-k8s'...
+   ⚠️  Source branch will be deleted after merge
+✅ Pull request validated
+   Source branch: staging-qoinplus/plus-apigateway_deployment.yaml
+   Destination branch: master
+✅ Pull request #483 merged successfully!
+   Repository: gitops-k8s
+   Source branch: staging-qoinplus/plus-apigateway_deployment.yaml
+   Destination branch: master
+   Merge commit: a1b2c3d
+   ⚠️  Source branch 'staging-qoinplus/plus-apigateway_deployment.yaml' will be deleted
+```
+
+**Already Merged PR:**
+
+```bash
+doq merge https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/483
+```
+
+Output:
+```
+🔍 Merging pull request #483 in repository 'gitops-k8s'...
+✅ Pull request #483 is already merged
+   Merge commit: a1b2c3d
+```
+
+#### Error Handling
+
+**Invalid PR URL Format:**
+```
+❌ Error: Invalid pull request URL format
+   Expected format: https://bitbucket.org/loyaltoid/<repo>/pull-requests/<id>
+   Got: invalid-url
+```
+
+**PR Not Found:**
+```
+❌ Error: Pull request #999 not found in repository 'gitops-k8s'
+   Check if PR URL is correct
+```
+
+**PR Already Declined:**
+```
+❌ Error: Pull request #483 is declined
+   Cannot merge a declined pull request
+```
+
+**Merge Conflicts:**
+```
+❌ Error: Merge conflicts detected
+   Merge conflicts detected. Please resolve conflicts manually.
+```
+
+---
+
 ## 💡 Examples
 
 ### Complete Workflow Example
@@ -389,6 +501,9 @@ doq set-image-yaml gitops-k8s staging-qoinplus/plus-apigateway_deployment.yaml \
 
 # 3. Create pull request
 doq pull-request gitops-k8s staging-qoinplus/plus-apigateway_deployment.yaml master --delete
+
+# 4. Merge pull request
+doq merge https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/483
 ```
 
 ---
@@ -518,6 +633,23 @@ Body: {
 }
 ```
 
+#### Get Pull Request Details
+```
+GET https://api.bitbucket.org/2.0/repositories/{org}/{repo}/pullrequests/{id}
+Auth: Basic {base64(username:password)}
+```
+
+#### Merge Pull Request
+```
+POST https://api.bitbucket.org/2.0/repositories/{org}/{repo}/pullrequests/{id}/merge
+Auth: Basic {base64(username:password)}
+Content-Type: application/json
+Body: {
+  "message": "Merged via doq merge",
+  "close_source_branch": true/false
+}
+```
+
 **Response Example (Pull Request):**
 ```json
 {
@@ -550,6 +682,7 @@ Body: {
 | `doq set-image-yaml` | Update image in YAML file and commit |
 | `doq clone` | Clone Git repository |
 | `doq image` | Check Docker image availability |
+| `doq merge` | Merge pull request automatically |
 
 ---
 
@@ -595,6 +728,9 @@ doq create-branch --help
 
 # Show help for pull-request command
 doq pull-request --help
+
+# Show help for merge command
+doq merge --help
 ```
 
 ### Common Workflows
