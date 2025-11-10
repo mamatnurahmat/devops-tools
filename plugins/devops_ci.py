@@ -24,6 +24,15 @@ from plugins.shared_helpers import (
 VERSION = "2.0.1"
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d")
 
+# Dummy auth dictionary for creating empty auth.json files
+DUMMY_AUTH_DICT = {
+    "GIT_USER": "",
+    "GIT_PASSWORD": "",
+    "DOCKERHUB_USER": "",
+    "DOCKERHUB_PASSWORD": "",
+    "NTFY_URL": ""
+}
+
 
 def show_version():
     """Show version information."""
@@ -114,26 +123,12 @@ class BuildConfig:
         if not auth_file.exists():
             # Create with dummy values
             self.config_dir.mkdir(parents=True, exist_ok=True)
-            dummy_auth = {
-                "GIT_USER": "",
-                "GIT_PASSWORD": "",
-                "DOCKERHUB_USER": "",
-                "DOCKERHUB_PASSWORD": "",
-                "NTFY_URL": ""
-            }
             with open(auth_file, 'w') as f:
-                json.dump(dummy_auth, f, indent=2)
+                json.dump(DUMMY_AUTH_DICT, f, indent=2)
         elif auth_file.stat().st_size == 0 or auth_file.read_text().strip() == "":
             # File exists but is empty
-            dummy_auth = {
-                "GIT_USER": "",
-                "GIT_PASSWORD": "",
-                "DOCKERHUB_USER": "",
-                "DOCKERHUB_PASSWORD": "",
-                "NTFY_URL": ""
-            }
             with open(auth_file, 'w') as f:
-                json.dump(dummy_auth, f, indent=2)
+                json.dump(DUMMY_AUTH_DICT, f, indent=2)
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from plugin config file."""
@@ -243,6 +238,39 @@ class DevOpsCIBuilder:
             'message': ''
         }
     
+    def _output_build_result(self, metadata: Dict[str, Any]):
+        """Output build result in appropriate format.
+        
+        Args:
+            metadata: Dict with 'image_name' key
+        """
+        if self.short_output:
+            print(metadata['image_name'])
+        elif not self.json_output:
+            print(f"\n✅ Build completed successfully!")
+            print(f"   Image: {metadata['image_name']}")
+        
+        self.result['success'] = True
+        self.result['image'] = metadata['image_name']
+        self.result['message'] = 'Build successful'
+        
+        if self.json_output:
+            print(json.dumps(self.result))
+    
+    def _get_tag_version(self, commit_info: Dict[str, Any]) -> str:
+        """Get tag version from commit info based on ref_type.
+        
+        Args:
+            commit_info: Dict with 'ref_type' and 'short_hash'
+            
+        Returns:
+            Tag version string (either refs for tags or short_hash for branches)
+        """
+        if commit_info['ref_type'] == 'tag':
+            return self.refs
+        else:
+            return commit_info['short_hash']
+    
     def build(self) -> int:
         """Execute the build process."""
         try:
@@ -323,18 +351,7 @@ class DevOpsCIBuilder:
         self._cleanup()
         
         # Output result
-        if self.short_output:
-            print(metadata['image_name'])
-        elif not self.json_output:
-            print(f"\n✅ Build completed successfully!")
-            print(f"   Image: {metadata['image_name']}")
-        
-        self.result['success'] = True
-        self.result['image'] = metadata['image_name']
-        self.result['message'] = 'Build successful'
-        
-        if self.json_output:
-            print(json.dumps(self.result))
+        self._output_build_result(metadata)
         
         return 0
     
@@ -376,18 +393,7 @@ class DevOpsCIBuilder:
         self._cleanup()
         
         # Output result
-        if self.short_output:
-            print(metadata['image_name'])
-        elif not self.json_output:
-            print(f"\n✅ Build completed successfully!")
-            print(f"   Image: {metadata['image_name']}")
-        
-        self.result['success'] = True
-        self.result['image'] = metadata['image_name']
-        self.result['message'] = 'Build successful'
-        
-        if self.json_output:
-            print(json.dumps(self.result))
+        self._output_build_result(metadata)
         
         return 0
     
@@ -410,12 +416,7 @@ class DevOpsCIBuilder:
             
             # Build full image name
             namespace = self.config.get('docker.namespace', 'loyaltolpi')
-            
-            if commit_info['ref_type'] == 'tag':
-                tag_version = self.refs
-            else:
-                tag_version = commit_info['short_hash']
-            
+            tag_version = self._get_tag_version(commit_info)
             full_image = f"{namespace}/{image_name}:{tag_version}"
             
             return {
@@ -442,6 +443,49 @@ class DevOpsCIBuilder:
                 print(f"   Using default build configuration")
             return {}
     
+    def _parse_custom_image(self, custom_image: str, commit_info: Dict[str, Any]) -> str:
+        """Parse custom image name and build full image name with tag.
+        
+        Args:
+            custom_image: Custom image name (may or may not include tag)
+            commit_info: Dict with commit info
+            
+        Returns:
+            Full image name with tag
+        """
+        # Check if user provided explicit tag
+        if ':' in custom_image:
+            # User provided explicit tag - use as-is
+            return custom_image
+        
+        # No tag provided - add commit hash
+        image_base = custom_image
+        
+        # Check if already has namespace
+        if '/' in image_base:
+            full_image_base = image_base
+        else:
+            namespace = self.config.get('docker.namespace', 'loyaltolpi')
+            full_image_base = f"{namespace}/{image_base}"
+        
+        # Add commit hash as tag
+        tag_version = self._get_tag_version(commit_info)
+        return f"{full_image_base}:{tag_version}"
+    
+    def _build_default_image(self, repo: str, commit_info: Dict[str, Any]) -> str:
+        """Build default image name from repo and commit info.
+        
+        Args:
+            repo: Repository name
+            commit_info: Dict with commit info
+            
+        Returns:
+            Full image name with tag
+        """
+        namespace = self.config.get('docker.namespace', 'loyaltolpi')
+        tag_version = self._get_tag_version(commit_info)
+        return f"{namespace}/{repo}:{tag_version}"
+    
     def _generate_helper_metadata(self, auth_data: Dict[str, str]) -> Optional[Dict[str, Any]]:
         """Generate metadata for helper mode."""
         try:
@@ -451,37 +495,10 @@ class DevOpsCIBuilder:
             custom_image = self.helper_args.get('image_name', '')
             
             if custom_image:
-                # Check if user provided explicit tag
-                if ':' in custom_image:
-                    # User provided explicit tag - use as-is
-                    full_image = custom_image
-                    tag_version = custom_image.split(':')[1]
-                else:
-                    # No tag provided - add commit hash
-                    image_base = custom_image
-                    
-                    # Check if already has namespace
-                    if '/' in image_base:
-                        full_image_base = image_base
-                    else:
-                        namespace = self.config.get('docker.namespace', 'loyaltolpi')
-                        full_image_base = f"{namespace}/{image_base}"
-                    
-                    # Add commit hash as tag
-                    if commit_info['ref_type'] == 'tag':
-                        tag_version = self.refs
-                    else:
-                        tag_version = commit_info['short_hash']
-                    
-                    full_image = f"{full_image_base}:{tag_version}"
+                full_image = self._parse_custom_image(custom_image, commit_info)
             else:
                 # No custom image - use default
-                namespace = self.config.get('docker.namespace', 'loyaltolpi')
-                if commit_info['ref_type'] == 'tag':
-                    tag_version = self.refs
-                else:
-                    tag_version = commit_info['short_hash']
-                full_image = f"{namespace}/{self.repo}:{tag_version}"
+                full_image = self._build_default_image(self.repo, commit_info)
             
             return {
                 'image_name': full_image,
@@ -670,6 +687,36 @@ class DevOpsCIBuilder:
                 print(f"🧹 Cleaned up build directory")
 
 
+def _detect_helper_mode(args) -> tuple[bool, Dict[str, str]]:
+    """Detect if helper mode should be enabled based on arguments.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        Tuple of (helper_mode bool, helper_args dict)
+    """
+    helper_args = {}
+    auto_helper_mode = False
+    
+    if hasattr(args, 'image_name') and args.image_name:
+        helper_args['image_name'] = args.image_name
+        auto_helper_mode = True
+    
+    if hasattr(args, 'registry') and args.registry:
+        helper_args['registry'] = args.registry
+        auto_helper_mode = True
+    
+    if hasattr(args, 'port') and args.port:
+        helper_args['port'] = args.port
+        auto_helper_mode = True
+    
+    # Use explicit --helper flag if provided, otherwise use auto-detected mode
+    helper_mode = getattr(args, 'helper', False) or auto_helper_mode
+    
+    return helper_mode, helper_args
+
+
 def cmd_devops_ci(args):
     """Command handler for 'doq devops-ci'."""
     # Handle special flags
@@ -687,24 +734,8 @@ def cmd_devops_ci(args):
         print("   Usage: doq devops-ci <repo> <refs> [options]", file=sys.stderr)
         sys.exit(1)
     
-    # Auto-detect helper mode based on helper-specific arguments
-    helper_args = {}
-    auto_helper_mode = False
-    
-    if hasattr(args, 'image_name') and args.image_name:
-        helper_args['image_name'] = args.image_name
-        auto_helper_mode = True
-    
-    if hasattr(args, 'registry') and args.registry:
-        helper_args['registry'] = args.registry
-        auto_helper_mode = True
-    
-    if hasattr(args, 'port') and args.port:
-        helper_args['port'] = args.port
-        auto_helper_mode = True
-    
-    # Use explicit --helper flag if provided, otherwise use auto-detected mode
-    helper_mode = args.helper or auto_helper_mode
+    # Detect helper mode
+    helper_mode, helper_args = _detect_helper_mode(args)
     
     # Create builder
     builder = DevOpsCIBuilder(

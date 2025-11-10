@@ -394,7 +394,7 @@ doq update --latest
 
 # 3. Test functionality
 doq login
-doq cluster
+doq project
 
 # 4. Jika ada masalah, rollback
 doq update <previous_commit_hash>
