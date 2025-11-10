@@ -11,6 +11,7 @@ Simple CLI tool untuk mengelola Rancher resources menggunakan Python.
   - Quick setup scripts
 - **[DEVOPS-CI.md](docs/DEVOPS-CI.md)** - DevOps CI/CD build system
 - **[DOQ-IMAGE.md](docs/DOQ-IMAGE.md)** - Docker image checker
+- **[GIT-COMMANDS.md](docs/GIT-COMMANDS.md)** - Git/Bitbucket commands (commit, create-branch, pull-request)
 - **[DEPLOY-WEB.md](docs/DEPLOY-WEB.md)** - Web deployment via Docker Compose
 - **[DEPLOY-K8S.md](docs/DEPLOY-K8S.md)** - Kubernetes deployment
 

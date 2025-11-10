@@ -1557,6 +1557,303 @@ def cmd_commit(args):
         sys.exit(1)
 
 
+def cmd_create_branch(args):
+    """Create a new branch in Bitbucket repository from source branch."""
+    repo = args.repo
+    src_branch = args.src_branch
+    dest_branch = args.dest_branch
+    
+    if not repo or not src_branch or not dest_branch:
+        print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
+        print("Usage: doq create-branch <repo> <src_branch> <dest_branch>", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Load authentication
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        git_user = auth_data.get('GIT_USER', '')
+        git_password = auth_data.get('GIT_PASSWORD', '')
+        
+        if not git_user or not git_password:
+            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"🔍 Creating branch '{dest_branch}' from '{src_branch}' in repository '{repo}'...")
+        
+        # Step 1: Validate source branch exists and get commit hash
+        src_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{src_branch}"
+        
+        try:
+            resp = requests.get(src_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 404:
+                print(f"❌ Error: Source branch '{src_branch}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            resp.raise_for_status()
+            src_branch_data = resp.json()
+            src_commit_hash = src_branch_data['target']['hash']
+            short_hash = src_commit_hash[:7] if len(src_commit_hash) >= 7 else src_commit_hash
+            
+            print(f"✅ Source branch '{src_branch}' found (commit: {short_hash})")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error fetching source branch: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Step 2: Check if destination branch already exists
+        dest_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{dest_branch}"
+        
+        try:
+            resp = requests.get(dest_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 200:
+                print(f"❌ Error: Destination branch '{dest_branch}' already exists in repository '{repo}'", file=sys.stderr)
+                print(f"   Use a different branch name or delete the existing branch first", file=sys.stderr)
+                sys.exit(1)
+            elif resp.status_code != 404:
+                # If it's not 404, there might be another error
+                resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            # If error is not 404, it's a real error
+            if "404" not in str(e):
+                print(f"❌ Error checking destination branch: {e}", file=sys.stderr)
+                sys.exit(1)
+        
+        # Step 3: Create new branch
+        create_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches"
+        branch_data = {
+            "name": dest_branch,
+            "target": {
+                "hash": src_commit_hash
+            }
+        }
+        
+        try:
+            resp = requests.post(
+                create_branch_url,
+                auth=(git_user, git_password),
+                json=branch_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            
+            if resp.status_code == 201:
+                created_branch = resp.json()
+                created_hash = created_branch.get('target', {}).get('hash', src_commit_hash)
+                created_short_hash = created_hash[:7] if len(created_hash) >= 7 else created_hash
+                
+                print(f"✅ Branch '{dest_branch}' created successfully!")
+                print(f"   Repository: {repo}")
+                print(f"   Source branch: {src_branch}")
+                print(f"   Commit: {created_short_hash}")
+            elif resp.status_code == 409:
+                # Conflict - branch might already exist
+                error_data = resp.json()
+                error_msg = error_data.get('error', {}).get('message', 'Branch already exists')
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                print(f"   Branch '{dest_branch}' might already exist", file=sys.stderr)
+                sys.exit(1)
+            else:
+                resp.raise_for_status()
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error creating branch: {e}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get('error', {}).get('message', str(e))
+                    print(f"   Details: {error_msg}", file=sys.stderr)
+                except Exception:
+                    pass
+            sys.exit(1)
+        
+    except KeyboardInterrupt:
+        print("\n❌ Command cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_pull_request(args):
+    """Create a pull request in Bitbucket repository from source branch to destination branch."""
+    repo = args.repo
+    src_branch = args.src_branch
+    dest_branch = args.dest_branch
+    delete_after_merge = args.delete if hasattr(args, 'delete') else False
+    
+    if not repo or not src_branch or not dest_branch:
+        print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
+        print("Usage: doq pull-request <repo> <src_branch> <dest_branch> [--delete]", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Load authentication
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        git_user = auth_data.get('GIT_USER', '')
+        git_password = auth_data.get('GIT_PASSWORD', '')
+        
+        if not git_user or not git_password:
+            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+            sys.exit(1)
+        
+        print(f"🔍 Creating pull request from '{src_branch}' to '{dest_branch}' in repository '{repo}'...")
+        if delete_after_merge:
+            print(f"   ⚠️  Source branch '{src_branch}' will be deleted after merge")
+        
+        # Step 1: Validate source branch exists
+        src_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{src_branch}"
+        
+        try:
+            resp = requests.get(src_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 404:
+                print(f"❌ Error: Source branch '{src_branch}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            resp.raise_for_status()
+            print(f"✅ Source branch '{src_branch}' validated")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error validating source branch: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Step 2: Validate destination branch exists
+        dest_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{dest_branch}"
+        
+        try:
+            resp = requests.get(dest_branch_url, auth=(git_user, git_password), timeout=30)
+            
+            if resp.status_code == 404:
+                print(f"❌ Error: Destination branch '{dest_branch}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            resp.raise_for_status()
+            print(f"✅ Destination branch '{dest_branch}' validated")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error validating destination branch: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Step 3: Create pull request
+        pr_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/pullrequests"
+        pr_data = {
+            "title": f"Merge {src_branch} into {dest_branch}",
+            "source": {
+                "branch": {
+                    "name": src_branch
+                }
+            },
+            "destination": {
+                "branch": {
+                    "name": dest_branch
+                }
+            },
+            "close_source_branch": delete_after_merge
+        }
+        
+        try:
+            resp = requests.post(
+                pr_url,
+                auth=(git_user, git_password),
+                json=pr_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            
+            if resp.status_code == 201:
+                pr_response = resp.json()
+                # Extract PR URL from links.html.href
+                pr_html_url = None
+                if 'links' in pr_response and 'html' in pr_response['links']:
+                    pr_html_url = pr_response['links']['html'].get('href')
+                
+                # Also try alternative location
+                if not pr_html_url and 'links' in pr_response:
+                    # Sometimes it's directly in links
+                    for link_type, link_data in pr_response['links'].items():
+                        if isinstance(link_data, dict) and 'href' in link_data:
+                            if link_type == 'html' or 'html' in str(link_data.get('href', '')):
+                                pr_html_url = link_data['href']
+                                break
+                
+                # Fallback: construct URL manually if not found
+                if not pr_html_url:
+                    pr_id = pr_response.get('id', 'unknown')
+                    pr_html_url = f"https://bitbucket.org/{BITBUCKET_ORG}/{repo}/pull-requests/{pr_id}"
+                
+                print(f"✅ Pull request created successfully!")
+                print(f"   Repository: {repo}")
+                print(f"   Source branch: {src_branch}")
+                print(f"   Destination branch: {dest_branch}")
+                if delete_after_merge:
+                    print(f"   ⚠️  Source branch will be deleted after merge")
+                print(f"   Pull Request URL: {pr_html_url}")
+                
+            elif resp.status_code == 400:
+                # Bad request - might be conflicts or validation errors
+                error_data = resp.json()
+                error_msg = error_data.get('error', {}).get('message', 'Failed to create pull request')
+                error_detail = error_data.get('error', {}).get('detail', {})
+                
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                if error_detail:
+                    if 'source' in error_detail:
+                        print(f"   Source branch issue: {error_detail['source']}", file=sys.stderr)
+                    if 'destination' in error_detail:
+                        print(f"   Destination branch issue: {error_detail['destination']}", file=sys.stderr)
+                sys.exit(1)
+            elif resp.status_code == 409:
+                # Conflict - PR might already exist
+                error_data = resp.json()
+                error_msg = error_data.get('error', {}).get('message', 'Pull request already exists')
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                print(f"   A pull request from '{src_branch}' to '{dest_branch}' might already exist", file=sys.stderr)
+                sys.exit(1)
+            else:
+                resp.raise_for_status()
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error creating pull request: {e}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get('error', {}).get('message', str(e))
+                    print(f"   Details: {error_msg}", file=sys.stderr)
+                except Exception:
+                    pass
+            sys.exit(1)
+        
+    except KeyboardInterrupt:
+        print("\n❌ Command cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_clone(args):
     """Clone Git repository using credentials from ~/.netrc."""
     try:
@@ -1958,6 +2255,28 @@ def main():
     commit_parser.add_argument('commit_id', nargs='?', help='Short commit ID (e.g., abc1234). If omitted, shows last 5 commits.')
     commit_parser.add_argument('--json', action='store_true', help='Output as JSON')
     commit_parser.set_defaults(func=cmd_commit)
+    
+    # Create branch command
+    create_branch_parser = subparsers.add_parser('create-branch',
+                                                 help='Create a new branch in Bitbucket repository from source branch',
+                                                 description='Create a new branch in Bitbucket repository from an existing source branch. '
+                                                           'The new branch will point to the same commit as the source branch.')
+    create_branch_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    create_branch_parser.add_argument('src_branch', help='Source branch name (e.g., develop, main)')
+    create_branch_parser.add_argument('dest_branch', help='Destination branch name (new branch to create)')
+    create_branch_parser.set_defaults(func=cmd_create_branch)
+    
+    # Pull request command
+    pull_request_parser = subparsers.add_parser('pull-request',
+                                                help='Create a pull request in Bitbucket repository',
+                                                description='Create a pull request from source branch to destination branch. '
+                                                          'Use --delete flag to delete source branch after merge.')
+    pull_request_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    pull_request_parser.add_argument('src_branch', help='Source branch name (e.g., feature-branch)')
+    pull_request_parser.add_argument('dest_branch', help='Destination branch name (e.g., develop, main)')
+    pull_request_parser.add_argument('--delete', action='store_true', default=False,
+                                     help='Delete source branch after merge (default: False)')
+    pull_request_parser.set_defaults(func=cmd_pull_request)
     
     # Register plugin commands dynamically
     plugin_manager.register_plugin_commands(subparsers)
