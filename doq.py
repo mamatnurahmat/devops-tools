@@ -10,8 +10,9 @@ from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
 from plugin_manager import PluginManager
-from plugins.shared_helpers import load_netrc_credentials
+from plugins.shared_helpers import load_netrc_credentials, load_auth_file, BITBUCKET_API_BASE, BITBUCKET_ORG
 from plugins.set_image_yaml import update_image_in_repo, ImageUpdateError
+import requests
 # Plugins are now loaded dynamically via PluginManager
 # No need to import plugin modules directly
 
@@ -1243,6 +1244,319 @@ def cmd_config(args):
         print(f"Insecure: {config['insecure']}")
 
 
+def _detect_ref_type(repo, ref, git_user, git_password):
+    """Detect if ref is a tag or branch and return commit hash."""
+    # Try branch first
+    try:
+        branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{ref}"
+        resp = requests.get(branch_url, auth=(git_user, git_password), timeout=30)
+        if resp.status_code == 200:
+            branch_data = resp.json()
+            commit_hash = branch_data['target']['hash']
+            return {'type': 'branch', 'commit_hash': commit_hash}
+    except Exception:
+        pass
+    
+    # Try tag
+    try:
+        tag_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/tags/{ref}"
+        resp = requests.get(tag_url, auth=(git_user, git_password), timeout=30)
+        if resp.status_code == 200:
+            tag_data = resp.json()
+            commit_hash = tag_data['target']['hash']
+            return {'type': 'tag', 'commit_hash': commit_hash}
+    except Exception:
+        pass
+    
+    return None
+
+
+def _get_branches_for_commit(repo, commit_hash, git_user, git_password):
+    """Get branches that contain the specified commit."""
+    try:
+        branches_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commit/{commit_hash}/branches"
+        resp = requests.get(branches_url, auth=(git_user, git_password), timeout=30)
+        if resp.status_code == 200:
+            branches_data = resp.json()
+            branches = branches_data.get('values', [])
+            # Extract branch names
+            branch_names = [b.get('name', '') for b in branches if b.get('name')]
+            return branch_names
+    except Exception:
+        pass
+    
+    return []
+
+
+def _format_commit_date(commit_date):
+    """Format commit date from ISO format to readable format."""
+    if not commit_date:
+        return 'Unknown date'
+    
+    try:
+        from datetime import datetime
+        # Parse ISO format date
+        if 'T' in commit_date:
+            if commit_date.endswith('Z'):
+                commit_date = commit_date.replace('Z', '+00:00')
+            dt = datetime.fromisoformat(commit_date)
+            return dt.strftime('%a %b %d %H:%M:%S %Y %z')
+        else:
+            return commit_date
+    except Exception:
+        return commit_date
+
+
+def _extract_author_info(author_info):
+    """Extract author name and email from author info."""
+    author_name = None
+    author_email = None
+    
+    # Try to get from author.user object first
+    if 'user' in author_info and author_info['user']:
+        author_name = author_info['user'].get('display_name') or author_info['user'].get('username')
+        author_email = author_info['user'].get('email')
+    
+    # Fallback to author.raw if available (format: "Name <email>")
+    if not author_name and 'raw' in author_info:
+        raw_author = author_info['raw']
+        if '<' in raw_author and '>' in raw_author:
+            # Parse "Name <email>" format
+            parts = raw_author.split('<', 1)
+            author_name = parts[0].strip()
+            author_email = parts[1].rstrip('>').strip()
+        else:
+            author_name = raw_author.strip()
+    
+    return author_name, author_email
+
+
+def _format_commit_json(commit_data, commit_id=None, branch=None):
+    """Format commit data as JSON."""
+    commit_hash = commit_data.get('hash', commit_id or 'unknown')
+    author_info = commit_data.get('author', {})
+    author_name, author_email = _extract_author_info(author_info)
+    commit_date = commit_data.get('date', '')
+    formatted_date = _format_commit_date(commit_date)
+    commit_message = commit_data.get('message', '').strip()
+    
+    result = {
+        'commit': commit_hash,
+        'author': {
+            'name': author_name or 'Unknown',
+            'email': author_email or None
+        },
+        'date': formatted_date,
+        'message': commit_message or '(no commit message)'
+    }
+    
+    if branch:
+        result['branch'] = branch
+    
+    return result
+
+
+def _display_single_commit(commit_data, commit_id=None, json_output=False, branch=None):
+    """Display single commit information."""
+    if json_output:
+        output = _format_commit_json(commit_data, commit_id, branch)
+        print(json.dumps(output, indent=2))
+        return
+    
+    commit_hash = commit_data.get('hash', commit_id or 'unknown')
+    author_info = commit_data.get('author', {})
+    author_name, author_email = _extract_author_info(author_info)
+    commit_date = commit_data.get('date', '')
+    formatted_date = _format_commit_date(commit_date)
+    commit_message = commit_data.get('message', '').strip()
+    
+    print(f"commit {commit_hash}")
+    if branch:
+        print(f"Branch: {branch}")
+    if author_name:
+        if author_email:
+            print(f"Author: {author_name} <{author_email}>")
+        else:
+            print(f"Author: {author_name}")
+    else:
+        print("Author: Unknown")
+    
+    print(f"Date:   {formatted_date}")
+    print()
+    if commit_message:
+        # Split message into lines and display
+        for line in commit_message.split('\n'):
+            print(f"    {line}")
+    else:
+        print("    (no commit message)")
+
+
+def cmd_commit(args):
+    """Display commit information from Bitbucket repository."""
+    repo = args.repo
+    ref = args.ref
+    commit_id = args.commit_id
+    
+    if not repo or not ref:
+        print("Error: Repository name and refs (branch/tag) are required", file=sys.stderr)
+        print("Usage: doq commit <repo> <ref> [commit_id]", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        # Load authentication
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            print(f"❌ Error: {e}", file=sys.stderr)
+            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+            sys.exit(1)
+        
+        git_user = auth_data.get('GIT_USER', '')
+        git_password = auth_data.get('GIT_PASSWORD', '')
+        
+        if not git_user or not git_password:
+            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+            sys.exit(1)
+        
+        if commit_id:
+            # Display single commit
+            commit_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commit/{commit_id}"
+            
+            try:
+                resp = requests.get(commit_url, auth=(git_user, git_password), timeout=30)
+                
+                if resp.status_code == 404:
+                    print(f"❌ Error: Commit '{commit_id}' not found in repository '{repo}'", file=sys.stderr)
+                    print(f"   Check if commit ID is correct and exists in the repository", file=sys.stderr)
+                    sys.exit(1)
+                
+                resp.raise_for_status()
+                commit_data = resp.json()
+                
+                # If ref is a tag, get branch information
+                branch = None
+                if ref:
+                    ref_info = _detect_ref_type(repo, ref, git_user, git_password)
+                    if ref_info and ref_info['type'] == 'tag':
+                        # Get branches that contain this commit
+                        branches = _get_branches_for_commit(repo, commit_data.get('hash', commit_id), git_user, git_password)
+                        if branches:
+                            branch = branches[0]  # Use first branch found
+                
+                _display_single_commit(commit_data, commit_id, json_output=args.json, branch=branch)
+                
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error fetching commit information: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Display last 5 commits
+            # First detect if ref is tag or branch
+            ref_info = _detect_ref_type(repo, ref, git_user, git_password)
+            
+            if not ref_info:
+                print(f"❌ Error: Branch/tag '{ref}' not found in repository '{repo}'", file=sys.stderr)
+                print(f"   Check if branch/tag name is correct", file=sys.stderr)
+                sys.exit(1)
+            
+            # If tag, get commit hash and use it to get commits
+            if ref_info['type'] == 'tag':
+                # Get commit details for the tag
+                commit_hash = ref_info['commit_hash']
+                commit_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commit/{commit_hash}"
+                
+                try:
+                    resp = requests.get(commit_url, auth=(git_user, git_password), timeout=30)
+                    resp.raise_for_status()
+                    commit_data = resp.json()
+                    
+                    # Get branches that contain this commit
+                    branches = _get_branches_for_commit(repo, commit_hash, git_user, git_password)
+                    branch = branches[0] if branches else None
+                    
+                    if args.json:
+                        output = _format_commit_json(commit_data, commit_hash, branch)
+                        print(json.dumps(output, indent=2))
+                    else:
+                        _display_single_commit(commit_data, commit_hash, json_output=False, branch=branch)
+                    
+                except requests.exceptions.RequestException as e:
+                    print(f"❌ Error fetching commit information: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                # It's a branch, show last 5 commits
+                commits_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/commits/{ref}"
+                
+                try:
+                    resp = requests.get(
+                        commits_url,
+                        auth=(git_user, git_password),
+                        params={'pagelen': 5},
+                        timeout=30
+                    )
+                    
+                    if resp.status_code == 404:
+                        print(f"❌ Error: Branch '{ref}' not found in repository '{repo}'", file=sys.stderr)
+                        print(f"   Check if branch name is correct", file=sys.stderr)
+                        sys.exit(1)
+                    
+                    resp.raise_for_status()
+                    commits_data = resp.json()
+                    commits = commits_data.get('values', [])
+                    
+                    if not commits:
+                        if args.json:
+                            print(json.dumps({'commits': []}, indent=2))
+                        else:
+                            print(f"No commits found for '{ref}' in repository '{repo}'")
+                        return
+                    
+                    if args.json:
+                        # Format as JSON array
+                        commits_json = []
+                        for commit_data in commits:
+                            commits_json.append(_format_commit_json(commit_data))
+                        print(json.dumps({'commits': commits_json}, indent=2))
+                    else:
+                        print(f"Last 5 commits on '{ref}':")
+                        print("=" * 70)
+                        
+                        for i, commit_data in enumerate(commits, 1):
+                            commit_hash = commit_data.get('hash', 'unknown')
+                            short_hash = commit_hash[:7] if len(commit_hash) >= 7 else commit_hash
+                            author_info = commit_data.get('author', {})
+                            author_name, author_email = _extract_author_info(author_info)
+                            commit_date = commit_data.get('date', '')
+                            formatted_date = _format_commit_date(commit_date)
+                            commit_message = commit_data.get('message', '').strip()
+                            # Get first line of commit message
+                            first_line = commit_message.split('\n')[0] if commit_message else '(no commit message)'
+                            
+                            print(f"\n[{i}] {short_hash} - {first_line}")
+                            if author_name:
+                                author_display = f"{author_name} <{author_email}>" if author_email else author_name
+                                print(f"     Author: {author_display}")
+                            else:
+                                print(f"     Author: Unknown")
+                            print(f"     Date:   {formatted_date}")
+                        
+                        print("\n" + "=" * 70)
+                        print(f"Use 'doq commit {repo} {ref} <commit_id>' to view full details of a commit")
+                    
+                except requests.exceptions.RequestException as e:
+                    print(f"❌ Error fetching commits: {e}", file=sys.stderr)
+                    sys.exit(1)
+        
+    except KeyboardInterrupt:
+        print("\n❌ Command cancelled by user", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_clone(args):
     """Clone Git repository using credentials from ~/.netrc."""
     try:
@@ -1632,6 +1946,18 @@ def main():
     clone_parser.add_argument('--all', action='store_true',
                               help='Clone all branches instead of single branch (default: single branch only)')
     clone_parser.set_defaults(func=cmd_clone)
+    
+    # Commit command
+    commit_parser = subparsers.add_parser('commit',
+                                         help='Display commit information from Bitbucket repository',
+                                         description='Display commit information (timestamp, author name & email, commit message) from Bitbucket. '
+                                                   'If commit_id is provided, shows details of that commit. '
+                                                   'If omitted, shows last 5 commits from the specified branch/tag.')
+    commit_parser.add_argument('repo', help='Repository name (e.g., saas-apigateway)')
+    commit_parser.add_argument('ref', help='Branch or tag name (e.g., develop, main, v1.0.0)')
+    commit_parser.add_argument('commit_id', nargs='?', help='Short commit ID (e.g., abc1234). If omitted, shows last 5 commits.')
+    commit_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    commit_parser.set_defaults(func=cmd_commit)
     
     # Register plugin commands dynamically
     plugin_manager.register_plugin_commands(subparsers)
