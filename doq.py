@@ -2017,6 +2017,38 @@ def cmd_merge(args):
         sys.exit(1)
 
 
+def cmd_serve(args):
+    """Start API web server."""
+    try:
+        import uvicorn
+        from api_server import app
+        
+        host = args.host
+        port = args.port
+        
+        print(f"🚀 Starting API server on {host}:{port}")
+        print(f"📚 Swagger docs available at http://{host}:{port}/docs")
+        print(f"   Press CTRL+C to stop")
+        
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            log_level="info"
+        )
+    except ImportError as e:
+        print(f"❌ Error: Missing required dependencies", file=sys.stderr)
+        print(f"   Please install: pip install fastapi uvicorn", file=sys.stderr)
+        print(f"   Or: pip install -e .", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n✅ Server stopped")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Error starting server: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_clone(args):
     """Clone Git repository using credentials from ~/.netrc."""
     try:
@@ -2450,6 +2482,14 @@ def main():
     merge_parser.add_argument('--delete', action='store_true', default=False,
                               help='Delete source branch after merge (default: False)')
     merge_parser.set_defaults(func=cmd_merge)
+    
+    # Serve command - Start API server
+    serve_parser = subparsers.add_parser('serve',
+                                         help='Start API web server',
+                                         description='Start FastAPI web server on 0.0.0.0:9876 with Swagger documentation')
+    serve_parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
+    serve_parser.add_argument('--port', type=int, default=9876, help='Port to bind to (default: 9876)')
+    serve_parser.set_defaults(func=cmd_serve)
     
     # Register plugin commands dynamically
     plugin_manager.register_plugin_commands(subparsers)
