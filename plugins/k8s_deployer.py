@@ -10,7 +10,9 @@ from config_utils import load_json_config, get_env_override
 from plugins.shared_helpers import (
     load_auth_file,
     fetch_bitbucket_file,
-    get_commit_hash_from_bitbucket
+    get_commit_hash_from_bitbucket,
+    resolve_teams_webhook,
+    send_teams_notification
 )
 
 
@@ -81,7 +83,16 @@ class K8sDeployerConfig:
 class K8sDeployer:
     """Kubernetes application deployer."""
     
-    def __init__(self, repo: str, refs: str, custom_image: Optional[str] = None, config: Optional[K8sDeployerConfig] = None):
+    def __init__(
+        self,
+        repo: str,
+        refs: str,
+        custom_image: Optional[str] = None,
+        config: Optional[K8sDeployerConfig] = None,
+        namespace_override: Optional[str] = None,
+        deployment_override: Optional[str] = None,
+        webhook_url: Optional[str] = None
+    ):
         """Initialize K8s deployer.
         
         Args:
@@ -94,6 +105,9 @@ class K8sDeployer:
         self.refs = refs
         self.custom_image = custom_image
         self.config = config or K8sDeployerConfig()
+        self.namespace_override = namespace_override
+        self.deployment_override = deployment_override
+        self.webhook_url = resolve_teams_webhook(webhook_url)
         self.result = {
             'success': False,
             'action': 'unknown',
@@ -135,19 +149,19 @@ class K8sDeployer:
             Tuple of (namespace, deployment_name)
         """
         # Get PROJECT field from cicd.json
-        project = cicd_config.get('PROJECT')
-        if not project:
-            print(f"❌ Error: PROJECT field not found in cicd.json", file=sys.stderr)
-            return (None, None)
-        
-        # Get DEPLOYMENT field from cicd.json
-        deployment = cicd_config.get('DEPLOYMENT')
+        deployment = self.deployment_override or cicd_config.get('DEPLOYMENT')
         if not deployment:
             print(f"❌ Error: DEPLOYMENT field not found in cicd.json", file=sys.stderr)
             return (None, None)
         
-        # Construct namespace as {refs}-{PROJECT}
-        namespace = f"{self.refs}-{project}"
+        if self.namespace_override:
+            namespace = self.namespace_override
+        else:
+            project = cicd_config.get('PROJECT')
+            if not project:
+                print(f"❌ Error: PROJECT field not found in cicd.json", file=sys.stderr)
+                return (None, None)
+            namespace = f"{self.refs}-{project}"
         
         return (namespace, deployment)
     
@@ -321,20 +335,20 @@ class K8sDeployer:
                 print(f"❌ Error: Authentication not found", file=sys.stderr)
                 print(f"   Please configure credentials in ~/.doq/auth.json", file=sys.stderr)
                 self.result['message'] = 'Authentication not found'
-                return 1
+                return self._finalize(1)
             
             # Step 2: Fetch cicd.json
             print(f"🔍 Fetching deployment configuration...")
             cicd_config = self.fetch_cicd_config(auth_data)
             if not cicd_config:
                 self.result['message'] = 'Failed to fetch cicd.json'
-                return 1
+                return self._finalize(1)
             
             # Step 3: Determine namespace and deployment
             namespace, deployment = self.determine_namespace(cicd_config)
             if not namespace or not deployment:
                 self.result['message'] = 'Failed to determine namespace or deployment'
-                return 1
+                return self._finalize(1)
             
             self.result['namespace'] = namespace
             self.result['deployment'] = deployment
@@ -353,7 +367,7 @@ class K8sDeployer:
                 image_info = self.check_image_ready()
                 if not image_info:
                     self.result['message'] = 'Image not ready in Docker Hub'
-                    return 1
+                    return self._finalize(1)
                 
                 # Get commit hash and construct image name
                 commit_info = get_commit_hash_from_bitbucket(self.repo, self.refs, auth_data)
@@ -382,7 +396,7 @@ class K8sDeployer:
                     self.result['success'] = True
                     self.result['action'] = 'skipped'
                     self.result['message'] = 'Already deployed with same image'
-                    return 0
+                    return self._finalize(0)
                 else:
                     # Different image - update
                     print(f"🔄 Different image detected")
@@ -398,7 +412,7 @@ class K8sDeployer:
             print(f"🔄 Switching context to {namespace}...")
             if not self.switch_context(namespace):
                 self.result['message'] = 'Failed to switch context'
-                return 1
+                return self._finalize(1)
             print(f"✅ Context switched")
             
             # Step 8: Deploy image
@@ -406,21 +420,21 @@ class K8sDeployer:
             print(f"🚀 {action_verb} image...")
             if not self.set_image(namespace, deployment, full_image):
                 self.result['message'] = 'Failed to set image'
-                return 1
+                return self._finalize(1)
             
             print(f"✅ Deployment successful!")
             self.result['success'] = True
             self.result['message'] = 'Deployment successful'
-            return 0
+            return self._finalize(0)
             
         except KeyboardInterrupt:
             print(f"\n❌ Deployment cancelled by user", file=sys.stderr)
             self.result['message'] = 'Cancelled by user'
-            return 1
+            return self._finalize(1)
         except Exception as e:
             print(f"❌ Unexpected error: {e}", file=sys.stderr)
             self.result['message'] = str(e)
-            return 1
+            return self._finalize(1)
     
     def get_result(self) -> Dict[str, Any]:
         """Get deployment result.
@@ -431,10 +445,61 @@ class K8sDeployer:
         return self.result
 
 
+    def send_webhook(self, success: bool):
+        """Send deployment result to Microsoft Teams webhook."""
+        if not self.webhook_url:
+            return
+        
+        status_text = "SUCCESS" if success else "FAILED"
+        namespace = self.result.get('namespace') or '-'
+        deployment = self.result.get('deployment') or '-'
+        image = self.result.get('image') or '-'
+        previous_image = self.result.get('previous_image') or '-'
+        action = self.result.get('action') or '-'
+        message = self.result.get('message') or '-'
+        
+        facts = [
+            ("Repository", self.repo),
+            ("Reference", self.refs),
+            ("Action", action),
+            ("Namespace", namespace),
+            ("Deployment", deployment),
+            ("Image", image),
+            ("Previous Image", previous_image),
+            ("Message", message),
+        ]
+        
+        send_teams_notification(
+            self.webhook_url,
+            title=f"K8s Deployment {status_text}",
+            facts=facts,
+            success=success,
+            summary=f"K8s Deployment {status_text}"
+        )
+    
+    def _finalize(self, exit_code: int) -> int:
+        """Finalize deployment by sending webhook notification if configured."""
+        success = exit_code == 0
+        self.result['success'] = success
+        if self.webhook_url:
+            self.send_webhook(success)
+        return exit_code
+
+
 def cmd_deploy_k8s(args):
     """Command handler for 'doq deploy-k8s'."""
     custom_image = getattr(args, 'image', None)
-    deployer = K8sDeployer(args.repo, args.refs, custom_image=custom_image)
+    namespace_override = getattr(args, 'namespace', None)
+    deployment_override = getattr(args, 'deployment', None)
+    webhook_url = getattr(args, 'webhook', None)
+    deployer = K8sDeployer(
+        args.repo,
+        args.refs,
+        custom_image=custom_image,
+        namespace_override=namespace_override,
+        deployment_override=deployment_override,
+        webhook_url=webhook_url
+    )
     exit_code = deployer.deploy()
     
     # Output result as JSON if requested
@@ -462,6 +527,12 @@ def register_commands(subparsers):
     deploy_k8s_parser.add_argument('refs', help='Branch or tag name (e.g., develop, staging, production, v1.0.0)')
     deploy_k8s_parser.add_argument('--image', type=str, default=None,
                                    help='Custom Docker image to deploy (e.g., loyaltolpi/myapp:v1.0.0)')
+    deploy_k8s_parser.add_argument('--namespace', type=str,
+                                   help='Override Kubernetes namespace (skips auto construction)')
+    deploy_k8s_parser.add_argument('--deployment', type=str,
+                                   help='Override Kubernetes deployment name')
+    deploy_k8s_parser.add_argument('--webhook', type=str,
+                                   help='Microsoft Teams webhook URL for deployment notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
     deploy_k8s_parser.add_argument('--json', action='store_true',
                                    help='Output result in JSON format')
     deploy_k8s_parser.set_defaults(func=cmd_deploy_k8s)

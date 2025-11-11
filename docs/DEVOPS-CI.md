@@ -28,7 +28,7 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 - **Resource management** (CPU dan memory limits)
 - **Dual-mode operation**: API mode dan Helper mode
 - **Auto image caching** untuk skip unnecessary rebuilds
-- **Real-time notifications** via ntfy.sh
+- **Real-time notifications** via ntfy.sh & Microsoft Teams
 
 ### Why DevOps CI?
 
@@ -54,7 +54,7 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 | **Auto Image Caching** | Skip build jika image sudah ready (API mode) |
 | **Git Submodule Workaround** | Pre-clone dengan `--no-recurse-submodules` |
 | **Buildx Permission Fix** | Auto-fix permission issues di Docker buildx directory |
-| **Real-time Notifications** | Send build status ke ntfy.sh otomatis |
+| **Real-time Notifications** | Send build status ke ntfy.sh atau Microsoft Teams webhook |
 
 ### Output Modes
 
@@ -348,6 +348,7 @@ DEFAULT_CPU_QUOTA=100000
 
 # Notification
 NTFY_URL=https://ntfy.sh/doi-notif
+TEAMS_WEBHOOK="https://qoinid.webhook.office.com/..."
 ```
 
 #### Helper Mode Settings
@@ -453,6 +454,21 @@ Output hanya nama image:
 ```
 loyaltolpi/saas-be-core:develop-abc123
 ```
+
+### Notifications
+
+#### Microsoft Teams Webhook
+```bash
+# Optional: set once in your shell or ~/.doq/.env
+export TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+
+# Trigger build with Teams notification (env or flag)
+doq devops-ci saas-be-core develop --json
+# or
+doq devops-ci saas-be-core develop --webhook "$TEAMS_WEBHOOK"
+```
+
+Pesan akan dikirim setiap build selesai (success, skipped, atau failed) dengan ringkasan repository, branch, dan image yang dibangun.
 
 ### Resource Management
 

@@ -49,6 +49,8 @@ Comprehensive guide for the `doq deploy-k8s` command - automated Kubernetes depl
 - **Custom Image Support**: Deploy specific versions for rollbacks or testing
 - **First-Time Deployment**: Handles new deployments gracefully
 - **Error Handling**: Comprehensive validation and error messages
+- **Manual Overrides**: Force namespace/deployment values with CLI flags
+- **Teams Notifications**: Send deployment summaries to Microsoft Teams via webhook (auto-detects `TEAMS_WEBHOOK`)
 
 ### 🎯 Smart Deployment Logic
 
@@ -643,6 +645,14 @@ doq deploy-k8s saas-apigateway production
 doq deploy-k8s saas-apigateway v1.0.0
 ```
 
+#### Override Namespace and Deployment
+
+```bash
+doq deploy-k8s saas-apigateway develop \
+  --namespace custom-namespace \
+  --deployment custom-deployment
+```
+
 ### Custom Image Deployment
 
 #### Deploy Specific Version
@@ -833,6 +843,41 @@ curl -X POST "$SLACK_WEBHOOK" \
     }]
   }"
 ```
+
+### Microsoft Teams Notification
+
+```bash
+#!/bin/bash
+REPO="saas-apigateway"
+BRANCH="production"
+TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+
+echo "🚀 Deploying..."
+RESULT=$(doq deploy-k8s "$REPO" "$BRANCH" \
+  --namespace production-saas \
+  --deployment saas-apigateway \
+  --webhook "$TEAMS_WEBHOOK" \
+  --json)
+
+SUCCESS=$(echo "$RESULT" | jq -r '.success')
+IMAGE=$(echo "$RESULT" | jq -r '.image')
+ACTION=$(echo "$RESULT" | jq -r '.action')
+NAMESPACE=$(echo "$RESULT" | jq -r '.namespace')
+
+if [ "$SUCCESS" == "true" ]; then
+  echo "✅ Deployment succeeded ($ACTION → $IMAGE @ $NAMESPACE)"
+else
+  echo "❌ Deployment failed ($NAMESPACE)"
+fi
+```
+
+> **Tip:** You can skip the `--webhook` flag if you export the webhook URL:
+>
+> ```bash
+> export TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+> ```
+>
+> The CLI also reads `TEAMS_WEBHOOK` from `~/.doq/.env` if present.
 
 ### Rollback Script
 

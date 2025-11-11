@@ -10,7 +10,14 @@ from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
 from plugin_manager import PluginManager
-from plugins.shared_helpers import load_netrc_credentials, load_auth_file, BITBUCKET_API_BASE, BITBUCKET_ORG
+from plugins.shared_helpers import (
+    load_netrc_credentials,
+    load_auth_file,
+    BITBUCKET_API_BASE,
+    BITBUCKET_ORG,
+    resolve_teams_webhook,
+    send_teams_notification
+)
 from plugins.set_image_yaml import update_image_in_repo, ImageUpdateError
 import requests
 # Plugins are now loaded dynamically via PluginManager
@@ -1692,166 +1699,220 @@ def cmd_pull_request(args):
     src_branch = args.src_branch
     dest_branch = args.dest_branch
     delete_after_merge = args.delete if hasattr(args, 'delete') else False
+    webhook_url = resolve_teams_webhook(getattr(args, 'webhook', None))
     
-    if not repo or not src_branch or not dest_branch:
-        print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
-        print("Usage: doq pull-request <repo> <src_branch> <dest_branch> [--delete]", file=sys.stderr)
-        sys.exit(1)
+    result: Dict[str, Any] = {
+        'repository': repo,
+        'source': src_branch,
+        'destination': dest_branch,
+        'delete_after_merge': delete_after_merge,
+        'pr_url': '',
+        'message': '',
+        'success': False
+    }
+    
+    exit_code = 1
     
     try:
-        # Load authentication
-        try:
-            auth_data = load_auth_file()
-        except FileNotFoundError as e:
-            print(f"❌ Error: {e}", file=sys.stderr)
-            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
-            sys.exit(1)
-        except Exception as e:
-            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
-            sys.exit(1)
-        
-        git_user = auth_data.get('GIT_USER', '')
-        git_password = auth_data.get('GIT_PASSWORD', '')
-        
-        if not git_user or not git_password:
-            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
-            sys.exit(1)
-        
-        print(f"🔍 Creating pull request from '{src_branch}' to '{dest_branch}' in repository '{repo}'...")
-        if delete_after_merge:
-            print(f"   ⚠️  Source branch '{src_branch}' will be deleted after merge")
-        
-        # Step 1: Validate source branch exists
-        src_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{src_branch}"
-        
-        try:
-            resp = requests.get(src_branch_url, auth=(git_user, git_password), timeout=30)
+        while True:
+            if not repo or not src_branch or not dest_branch:
+                print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
+                print("Usage: doq pull-request <repo> <src_branch> <dest_branch> [--delete]", file=sys.stderr)
+                result['message'] = 'Missing required arguments'
+                break
             
-            if resp.status_code == 404:
-                print(f"❌ Error: Source branch '{src_branch}' not found in repository '{repo}'", file=sys.stderr)
-                print(f"   Check if branch name is correct", file=sys.stderr)
-                sys.exit(1)
+            try:
+                auth_data = load_auth_file()
+            except FileNotFoundError as e:
+                print(f"❌ Error: {e}", file=sys.stderr)
+                print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+                result['message'] = str(e)
+                break
+            except Exception as e:
+                print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+                result['message'] = str(e)
+                break
             
-            resp.raise_for_status()
-            print(f"✅ Source branch '{src_branch}' validated")
+            git_user = auth_data.get('GIT_USER', '')
+            git_password = auth_data.get('GIT_PASSWORD', '')
             
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error validating source branch: {e}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Step 2: Validate destination branch exists
-        dest_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{dest_branch}"
-        
-        try:
-            resp = requests.get(dest_branch_url, auth=(git_user, git_password), timeout=30)
+            if not git_user or not git_password:
+                print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+                result['message'] = 'Missing Git credentials'
+                break
             
-            if resp.status_code == 404:
-                print(f"❌ Error: Destination branch '{dest_branch}' not found in repository '{repo}'", file=sys.stderr)
-                print(f"   Check if branch name is correct", file=sys.stderr)
-                sys.exit(1)
+            print(f"🔍 Creating pull request from '{src_branch}' to '{dest_branch}' in repository '{repo}'...")
+            if delete_after_merge:
+                print(f"   ⚠️  Source branch '{src_branch}' will be deleted after merge")
             
-            resp.raise_for_status()
-            print(f"✅ Destination branch '{dest_branch}' validated")
+            # Step 1: Validate source branch exists
+            src_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{src_branch}"
             
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error validating destination branch: {e}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Step 3: Create pull request
-        pr_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/pullrequests"
-        pr_data = {
-            "title": f"Merge {src_branch} into {dest_branch}",
-            "source": {
-                "branch": {
-                    "name": src_branch
-                }
-            },
-            "destination": {
-                "branch": {
-                    "name": dest_branch
-                }
-            },
-            "close_source_branch": delete_after_merge
-        }
-        
-        try:
-            resp = requests.post(
-                pr_url,
-                auth=(git_user, git_password),
-                json=pr_data,
-                headers={'Content-Type': 'application/json'},
-                timeout=30
-            )
-            
-            if resp.status_code == 201:
-                pr_response = resp.json()
-                # Extract PR URL from links.html.href
-                pr_html_url = None
-                if 'links' in pr_response and 'html' in pr_response['links']:
-                    pr_html_url = pr_response['links']['html'].get('href')
+            try:
+                resp = requests.get(src_branch_url, auth=(git_user, git_password), timeout=30)
                 
-                # Also try alternative location
-                if not pr_html_url and 'links' in pr_response:
-                    # Sometimes it's directly in links
-                    for link_type, link_data in pr_response['links'].items():
-                        if isinstance(link_data, dict) and 'href' in link_data:
-                            if link_type == 'html' or 'html' in str(link_data.get('href', '')):
-                                pr_html_url = link_data['href']
-                                break
+                if resp.status_code == 404:
+                    print(f"❌ Error: Source branch '{src_branch}' not found in repository '{repo}'", file=sys.stderr)
+                    print(f"   Check if branch name is correct", file=sys.stderr)
+                    result['message'] = f"Source branch '{src_branch}' not found"
+                    break
                 
-                # Fallback: construct URL manually if not found
-                if not pr_html_url:
-                    pr_id = pr_response.get('id', 'unknown')
-                    pr_html_url = f"https://bitbucket.org/{BITBUCKET_ORG}/{repo}/pull-requests/{pr_id}"
-                
-                print(f"✅ Pull request created successfully!")
-                print(f"   Repository: {repo}")
-                print(f"   Source branch: {src_branch}")
-                print(f"   Destination branch: {dest_branch}")
-                if delete_after_merge:
-                    print(f"   ⚠️  Source branch will be deleted after merge")
-                print(f"   Pull Request URL: {pr_html_url}")
-                
-            elif resp.status_code == 400:
-                # Bad request - might be conflicts or validation errors
-                error_data = resp.json()
-                error_msg = error_data.get('error', {}).get('message', 'Failed to create pull request')
-                error_detail = error_data.get('error', {}).get('detail', {})
-                
-                print(f"❌ Error: {error_msg}", file=sys.stderr)
-                if error_detail:
-                    if 'source' in error_detail:
-                        print(f"   Source branch issue: {error_detail['source']}", file=sys.stderr)
-                    if 'destination' in error_detail:
-                        print(f"   Destination branch issue: {error_detail['destination']}", file=sys.stderr)
-                sys.exit(1)
-            elif resp.status_code == 409:
-                # Conflict - PR might already exist
-                error_data = resp.json()
-                error_msg = error_data.get('error', {}).get('message', 'Pull request already exists')
-                print(f"❌ Error: {error_msg}", file=sys.stderr)
-                print(f"   A pull request from '{src_branch}' to '{dest_branch}' might already exist", file=sys.stderr)
-                sys.exit(1)
-            else:
                 resp.raise_for_status()
+                print(f"✅ Source branch '{src_branch}' validated")
                 
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error creating pull request: {e}", file=sys.stderr)
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_data = e.response.json()
-                    error_msg = error_data.get('error', {}).get('message', str(e))
-                    print(f"   Details: {error_msg}", file=sys.stderr)
-                except Exception:
-                    pass
-            sys.exit(1)
-        
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error validating source branch: {e}", file=sys.stderr)
+                result['message'] = f"Error validating source branch: {e}"
+                break
+            
+            # Step 2: Validate destination branch exists
+            dest_branch_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/refs/branches/{dest_branch}"
+            
+            try:
+                resp = requests.get(dest_branch_url, auth=(git_user, git_password), timeout=30)
+                
+                if resp.status_code == 404:
+                    print(f"❌ Error: Destination branch '{dest_branch}' not found in repository '{repo}'", file=sys.stderr)
+                    print(f"   Check if branch name is correct", file=sys.stderr)
+                    result['message'] = f"Destination branch '{dest_branch}' not found"
+                    break
+                
+                resp.raise_for_status()
+                print(f"✅ Destination branch '{dest_branch}' validated")
+                
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error validating destination branch: {e}", file=sys.stderr)
+                result['message'] = f"Error validating destination branch: {e}"
+                break
+            
+            # Step 3: Create pull request
+            pr_url = f"{BITBUCKET_API_BASE}/{BITBUCKET_ORG}/{repo}/pullrequests"
+            pr_data = {
+                "title": f"Merge {src_branch} into {dest_branch}",
+                "source": {
+                    "branch": {
+                        "name": src_branch
+                    }
+                },
+                "destination": {
+                    "branch": {
+                        "name": dest_branch
+                    }
+                },
+                "close_source_branch": delete_after_merge
+            }
+            
+            try:
+                resp = requests.post(
+                    pr_url,
+                    auth=(git_user, git_password),
+                    json=pr_data,
+                    headers={'Content-Type': 'application/json'},
+                    timeout=30
+                )
+                
+                if resp.status_code == 201:
+                    pr_response = resp.json()
+                    pr_html_url = None
+                    if 'links' in pr_response and 'html' in pr_response['links']:
+                        pr_html_url = pr_response['links']['html'].get('href')
+                    
+                    if not pr_html_url and 'links' in pr_response:
+                        for link_type, link_data in pr_response['links'].items():
+                            if isinstance(link_data, dict) and 'href' in link_data:
+                                if link_type == 'html' or 'html' in str(link_data.get('href', '')):
+                                    pr_html_url = link_data['href']
+                                    break
+                    
+                    if not pr_html_url:
+                        pr_id = pr_response.get('id', 'unknown')
+                        pr_html_url = f"https://bitbucket.org/{BITBUCKET_ORG}/{repo}/pull-requests/{pr_id}"
+                    
+                    result['pr_url'] = pr_html_url or ''
+                    result['message'] = 'Pull request created successfully'
+                    result['success'] = True
+                    exit_code = 0
+                    
+                    print(f"✅ Pull request created successfully!")
+                    print(f"   Repository: {repo}")
+                    print(f"   Source branch: {src_branch}")
+                    print(f"   Destination branch: {dest_branch}")
+                    if delete_after_merge:
+                        print(f"   ⚠️  Source branch will be deleted after merge")
+                    print(f"   Pull Request URL: {pr_html_url}")
+                    
+                    break
+                
+                elif resp.status_code == 400:
+                    error_data = resp.json()
+                    error_msg = error_data.get('error', {}).get('message', 'Failed to create pull request')
+                    error_detail = error_data.get('error', {}).get('detail', {})
+                    
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    if error_detail:
+                        if 'source' in error_detail:
+                            print(f"   Source branch issue: {error_detail['source']}", file=sys.stderr)
+                        if 'destination' in error_detail:
+                            print(f"   Destination branch issue: {error_detail['destination']}", file=sys.stderr)
+                    result['message'] = error_msg
+                    break
+                elif resp.status_code == 409:
+                    error_data = resp.json()
+                    error_msg = error_data.get('error', {}).get('message', 'Pull request already exists')
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    print(f"   A pull request from '{src_branch}' to '{dest_branch}' might already exist", file=sys.stderr)
+                    result['message'] = error_msg
+                    break
+                else:
+                    resp.raise_for_status()
+                    result['message'] = f"Unexpected response from Bitbucket (HTTP {resp.status_code})"
+                    break
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error creating pull request: {e}", file=sys.stderr)
+                details = None
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_data = e.response.json()
+                        details = error_data.get('error', {}).get('message', str(e))
+                        print(f"   Details: {details}", file=sys.stderr)
+                    except Exception:
+                        pass
+                result['message'] = details or f"Error creating pull request: {e}"
+                break
+            
+            break
+    
     except KeyboardInterrupt:
         print("\n❌ Command cancelled by user", file=sys.stderr)
-        sys.exit(1)
+        result['message'] = 'Command cancelled by user'
     except Exception as e:
         print(f"❌ Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        result['message'] = str(e)
+    finally:
+        success = result.get('success', False) and exit_code == 0
+        result['success'] = success
+        if not result.get('message'):
+            result['message'] = 'Pull request created successfully' if success else 'Pull request failed'
+        
+        if webhook_url:
+            facts = [
+                ("Repository", result.get('repository') or '-'),
+                ("Source Branch", result.get('source') or '-'),
+                ("Destination Branch", result.get('destination') or '-'),
+                ("Delete After Merge", "Yes" if delete_after_merge else "No"),
+                ("PR URL", result.get('pr_url') or '-'),
+                ("Message", result.get('message') or '-'),
+            ]
+            send_teams_notification(
+                webhook_url,
+                title=f"Pull Request {'SUCCESS' if success else 'FAILED'}",
+                facts=facts,
+                success=success,
+                summary=f"Pull Request {'SUCCESS' if success else 'FAILED'}"
+            )
+    
+    sys.exit(0 if result.get('success') else 1)
 
 
 def cmd_merge(args):
@@ -1860,161 +1921,220 @@ def cmd_merge(args):
     
     pr_url = args.pr_url
     delete_after_merge = args.delete if hasattr(args, 'delete') else False
+    webhook_url = resolve_teams_webhook(getattr(args, 'webhook', None))
     
-    if not pr_url:
-        print("Error: Pull request URL is required", file=sys.stderr)
-        print("Usage: doq merge <pr_url> [--delete]", file=sys.stderr)
-        sys.exit(1)
+    result: Dict[str, Any] = {
+        'pr_url': pr_url,
+        'repository': '',
+        'pr_id': '',
+        'source': '',
+        'destination': '',
+        'message': '',
+        'success': False,
+        'delete_after_merge': delete_after_merge
+    }
+    
+    exit_code = 1
     
     try:
-        # Load authentication
-        try:
-            auth_data = load_auth_file()
-        except FileNotFoundError as e:
-            print(f"❌ Error: {e}", file=sys.stderr)
-            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
-            sys.exit(1)
-        except Exception as e:
-            print(f"❌ Error loading authentication: {e}", file=sys.stderr)
-            sys.exit(1)
-        
-        git_user = auth_data.get('GIT_USER', '')
-        git_password = auth_data.get('GIT_PASSWORD', '')
-        
-        if not git_user or not git_password:
-            print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
-            sys.exit(1)
-        
-        # Parse PR URL
-        # Format: https://bitbucket.org/{org}/{repo}/pull-requests/{id}
-        url_pattern = r'https?://bitbucket\.org/([^/]+)/([^/]+)/pull-requests/(\d+)'
-        match = re.search(url_pattern, pr_url)
-        
-        if not match:
-            print(f"❌ Error: Invalid pull request URL format", file=sys.stderr)
-            print(f"   Expected format: https://bitbucket.org/{BITBUCKET_ORG}/<repo>/pull-requests/<id>", file=sys.stderr)
-            print(f"   Got: {pr_url}", file=sys.stderr)
-            sys.exit(1)
-        
-        org, repo, pr_id = match.groups()
-        
-        print(f"🔍 Merging pull request #{pr_id} in repository '{repo}'...")
-        if delete_after_merge:
-            print(f"   ⚠️  Source branch will be deleted after merge")
-        
-        # Step 1: Get PR details to check current state
-        pr_details_url = f"{BITBUCKET_API_BASE}/{org}/{repo}/pullrequests/{pr_id}"
-        
-        try:
-            resp = requests.get(pr_details_url, auth=(git_user, git_password), timeout=30)
+        while True:
+            if not pr_url:
+                print("Error: Pull request URL is required", file=sys.stderr)
+                print("Usage: doq merge <pr_url> [--delete]", file=sys.stderr)
+                result['message'] = 'Missing pull request URL'
+                break
             
-            if resp.status_code == 404:
-                print(f"❌ Error: Pull request #{pr_id} not found in repository '{repo}'", file=sys.stderr)
-                print(f"   Check if PR URL is correct", file=sys.stderr)
-                sys.exit(1)
+            try:
+                auth_data = load_auth_file()
+            except FileNotFoundError as e:
+                print(f"❌ Error: {e}", file=sys.stderr)
+                print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+                result['message'] = str(e)
+                break
+            except Exception as e:
+                print(f"❌ Error loading authentication: {e}", file=sys.stderr)
+                result['message'] = str(e)
+                break
             
-            resp.raise_for_status()
-            pr_data = resp.json()
+            git_user = auth_data.get('GIT_USER', '')
+            git_password = auth_data.get('GIT_PASSWORD', '')
             
-            # Check if PR is already merged
-            pr_state = pr_data.get('state', '').upper()
-            if pr_state == 'MERGED':
-                print(f"✅ Pull request #{pr_id} is already merged")
-                merge_commit = pr_data.get('merge_commit', {})
-                if merge_commit:
-                    merge_hash = merge_commit.get('hash', 'unknown')
-                    short_hash = merge_hash[:7] if len(merge_hash) >= 7 else merge_hash
-                    print(f"   Merge commit: {short_hash}")
-                return
+            if not git_user or not git_password:
+                print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
+                result['message'] = 'Missing Git credentials'
+                break
             
-            # Check if PR is declined/closed
-            if pr_state in ['DECLINED', 'SUPERSEDED']:
-                print(f"❌ Error: Pull request #{pr_id} is {pr_state.lower()}", file=sys.stderr)
-                print(f"   Cannot merge a {pr_state.lower()} pull request", file=sys.stderr)
-                sys.exit(1)
+            url_pattern = r'https?://bitbucket\.org/([^/]+)/([^/]+)/pull-requests/(\d+)'
+            match = re.search(url_pattern, pr_url)
             
-            source_branch = pr_data.get('source', {}).get('branch', {}).get('name', 'unknown')
-            dest_branch = pr_data.get('destination', {}).get('branch', {}).get('name', 'unknown')
+            if not match:
+                print(f"❌ Error: Invalid pull request URL format", file=sys.stderr)
+                print(f"   Expected format: https://bitbucket.org/{BITBUCKET_ORG}/<repo>/pull-requests/<id>", file=sys.stderr)
+                print(f"   Got: {pr_url}", file=sys.stderr)
+                result['message'] = 'Invalid pull request URL format'
+                break
             
-            print(f"✅ Pull request validated")
-            print(f"   Source branch: {source_branch}")
-            print(f"   Destination branch: {dest_branch}")
+            org, repo, pr_id = match.groups()
+            result['repository'] = repo
+            result['pr_id'] = pr_id
             
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching pull request details: {e}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Step 2: Merge pull request
-        merge_url = f"{BITBUCKET_API_BASE}/{org}/{repo}/pullrequests/{pr_id}/merge"
-        merge_data = {
-            "message": "Merged via doq merge",
-            "close_source_branch": delete_after_merge
-        }
-        
-        try:
-            resp = requests.post(
-                merge_url,
-                auth=(git_user, git_password),
-                json=merge_data,
-                headers={'Content-Type': 'application/json'},
-                timeout=30
-            )
+            print(f"🔍 Merging pull request #{pr_id} in repository '{repo}'...")
+            if delete_after_merge:
+                print(f"   ⚠️  Source branch will be deleted after merge")
             
-            if resp.status_code == 200:
-                merge_response = resp.json()
-                merge_commit = merge_response.get('merge_commit', {})
-                merge_hash = merge_commit.get('hash', 'unknown') if merge_commit else 'unknown'
-                short_hash = merge_hash[:7] if len(merge_hash) >= 7 else merge_hash
+            pr_details_url = f"{BITBUCKET_API_BASE}/{org}/{repo}/pullrequests/{pr_id}"
+            
+            try:
+                resp = requests.get(pr_details_url, auth=(git_user, git_password), timeout=30)
                 
-                print(f"✅ Pull request #{pr_id} merged successfully!")
-                print(f"   Repository: {repo}")
+                if resp.status_code == 404:
+                    print(f"❌ Error: Pull request #{pr_id} not found in repository '{repo}'", file=sys.stderr)
+                    print(f"   Check if PR URL is correct", file=sys.stderr)
+                    result['message'] = f"Pull request #{pr_id} not found"
+                    break
+                
+                resp.raise_for_status()
+                pr_data = resp.json()
+                
+                pr_state = pr_data.get('state', '').upper()
+                source_branch = pr_data.get('source', {}).get('branch', {}).get('name', 'unknown')
+                dest_branch = pr_data.get('destination', {}).get('branch', {}).get('name', 'unknown')
+                result['source'] = source_branch
+                result['destination'] = dest_branch
+                
+                if pr_state == 'MERGED':
+                    print(f"✅ Pull request #{pr_id} is already merged")
+                    merge_commit = pr_data.get('merge_commit', {})
+                    if merge_commit:
+                        merge_hash = merge_commit.get('hash', 'unknown')
+                        short_hash = merge_hash[:7] if len(merge_hash) >= 7 else merge_hash
+                        print(f"   Merge commit: {short_hash}")
+                    result['message'] = 'Pull request already merged'
+                    result['success'] = True
+                    exit_code = 0
+                    break
+                
+                if pr_state in ['DECLINED', 'SUPERSEDED']:
+                    print(f"❌ Error: Pull request #{pr_id} is {pr_state.lower()}", file=sys.stderr)
+                    print(f"   Cannot merge a {pr_state.lower()} pull request", file=sys.stderr)
+                    result['message'] = f"Pull request is {pr_state.lower()}"
+                    break
+                
+                print(f"✅ Pull request validated")
                 print(f"   Source branch: {source_branch}")
                 print(f"   Destination branch: {dest_branch}")
-                if merge_hash != 'unknown':
-                    print(f"   Merge commit: {short_hash}")
-                if delete_after_merge:
-                    print(f"   ⚠️  Source branch '{source_branch}' will be deleted")
                 
-            elif resp.status_code == 400:
-                # Bad request - might be conflicts or validation errors
-                error_data = resp.json()
-                error_msg = error_data.get('error', {}).get('message', 'Failed to merge pull request')
-                error_detail = error_data.get('error', {}).get('detail', {})
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error fetching pull request details: {e}", file=sys.stderr)
+                result['message'] = f"Error fetching pull request details: {e}"
+                break
+            
+            merge_url = f"{BITBUCKET_API_BASE}/{org}/{repo}/pullrequests/{pr_id}/merge"
+            merge_data = {
+                "message": "Merged via doq merge",
+                "close_source_branch": delete_after_merge
+            }
+            
+            try:
+                resp = requests.post(
+                    merge_url,
+                    auth=(git_user, git_password),
+                    json=merge_data,
+                    headers={'Content-Type': 'application/json'},
+                    timeout=30
+                )
                 
-                print(f"❌ Error: {error_msg}", file=sys.stderr)
-                if error_detail:
-                    if 'merge_strategy' in error_detail:
-                        print(f"   Merge strategy issue: {error_detail['merge_strategy']}", file=sys.stderr)
-                    if 'conflicts' in str(error_detail):
-                        print(f"   Merge conflicts detected. Please resolve conflicts manually.", file=sys.stderr)
-                sys.exit(1)
-            elif resp.status_code == 409:
-                # Conflict - might be merge conflicts or PR already merged
-                error_data = resp.json()
-                error_msg = error_data.get('error', {}).get('message', 'Cannot merge pull request')
-                print(f"❌ Error: {error_msg}", file=sys.stderr)
-                print(f"   Pull request may have merge conflicts or may already be merged", file=sys.stderr)
-                sys.exit(1)
-            else:
-                resp.raise_for_status()
+                if resp.status_code == 200:
+                    merge_response = resp.json()
+                    merge_commit = merge_response.get('merge_commit', {})
+                    merge_hash = merge_commit.get('hash', 'unknown') if merge_commit else 'unknown'
+                    short_hash = merge_hash[:7] if len(merge_hash) >= 7 else merge_hash
+                    
+                    print(f"✅ Pull request #{pr_id} merged successfully!")
+                    print(f"   Repository: {repo}")
+                    print(f"   Source branch: {source_branch}")
+                    print(f"   Destination branch: {dest_branch}")
+                    if merge_hash != 'unknown':
+                        print(f"   Merge commit: {short_hash}")
+                    if delete_after_merge:
+                        print(f"   ⚠️  Source branch '{source_branch}' will be deleted")
+                    
+                    result['message'] = 'Pull request merged successfully'
+                    result['success'] = True
+                    exit_code = 0
+                    break
                 
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Error merging pull request: {e}", file=sys.stderr)
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_data = e.response.json()
-                    error_msg = error_data.get('error', {}).get('message', str(e))
-                    print(f"   Details: {error_msg}", file=sys.stderr)
-                except Exception:
-                    pass
-            sys.exit(1)
-        
+                elif resp.status_code == 400:
+                    error_data = resp.json()
+                    error_msg = error_data.get('error', {}).get('message', 'Failed to merge pull request')
+                    error_detail = error_data.get('error', {}).get('detail', {})
+                    
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    if error_detail:
+                        if 'merge_strategy' in error_detail:
+                            print(f"   Merge strategy issue: {error_detail['merge_strategy']}", file=sys.stderr)
+                        if 'conflicts' in str(error_detail):
+                            print(f"   Merge conflicts detected. Please resolve conflicts manually.", file=sys.stderr)
+                    result['message'] = error_msg
+                    break
+                elif resp.status_code == 409:
+                    error_data = resp.json()
+                    error_msg = error_data.get('error', {}).get('message', 'Cannot merge pull request')
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    print(f"   Pull request may have merge conflicts or may already be merged", file=sys.stderr)
+                    result['message'] = error_msg
+                    break
+                else:
+                    resp.raise_for_status()
+                    result['message'] = f"Unexpected response from Bitbucket (HTTP {resp.status_code})"
+                    break
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Error merging pull request: {e}", file=sys.stderr)
+                details = None
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_data = e.response.json()
+                        details = error_data.get('error', {}).get('message', str(e))
+                        print(f"   Details: {details}", file=sys.stderr)
+                    except Exception:
+                        pass
+                result['message'] = details or f"Error merging pull request: {e}"
+                break
+            
+            break
+    
     except KeyboardInterrupt:
         print("\n❌ Command cancelled by user", file=sys.stderr)
-        sys.exit(1)
+        result['message'] = 'Command cancelled by user'
     except Exception as e:
         print(f"❌ Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        result['message'] = str(e)
+    finally:
+        success = result.get('success', False) and exit_code == 0
+        result['success'] = success
+        if not result.get('message'):
+            result['message'] = 'Pull request merged successfully' if success else 'Pull request merge failed'
+        
+        if webhook_url:
+            facts = [
+                ("Repository", result.get('repository') or '-'),
+                ("Pull Request ID", result.get('pr_id') or '-'),
+                ("Source Branch", result.get('source') or '-'),
+                ("Destination Branch", result.get('destination') or '-'),
+                ("Delete After Merge", "Yes" if delete_after_merge else "No"),
+                ("PR URL", result.get('pr_url') or '-'),
+                ("Message", result.get('message') or '-'),
+            ]
+            send_teams_notification(
+                webhook_url,
+                title=f"Merge {'SUCCESS' if success else 'FAILED'}",
+                facts=facts,
+                success=success,
+                summary=f"Merge {'SUCCESS' if success else 'FAILED'}"
+            )
+    
+    sys.exit(0 if result.get('success') else 1)
 
 
 def cmd_serve(args):
@@ -2471,6 +2591,8 @@ def main():
     pull_request_parser.add_argument('dest_branch', help='Destination branch name (e.g., develop, main)')
     pull_request_parser.add_argument('--delete', action='store_true', default=False,
                                      help='Delete source branch after merge (default: False)')
+    pull_request_parser.add_argument('--webhook', type=str,
+                                     help='Microsoft Teams webhook URL for notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
     pull_request_parser.set_defaults(func=cmd_pull_request)
     
     # Merge command
@@ -2481,6 +2603,8 @@ def main():
     merge_parser.add_argument('pr_url', help='Pull request URL (e.g., https://bitbucket.org/loyaltoid/repo/pull-requests/123)')
     merge_parser.add_argument('--delete', action='store_true', default=False,
                               help='Delete source branch after merge (default: False)')
+    merge_parser.add_argument('--webhook', type=str,
+                              help='Microsoft Teams webhook URL for notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
     merge_parser.set_defaults(func=cmd_merge)
     
     # Serve command - Start API server
