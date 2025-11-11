@@ -49,6 +49,10 @@ Comprehensive guide for the `doq deploy-k8s` command - automated Kubernetes depl
 - **Custom Image Support**: Deploy specific versions for rollbacks or testing
 - **First-Time Deployment**: Handles new deployments gracefully
 - **Error Handling**: Comprehensive validation and error messages
+- **Manual Overrides**: Force namespace/deployment values with CLI flags
+- **Teams Notifications**: Send deployment summaries to Microsoft Teams via webhook (auto-detects `TEAMS_WEBHOOK`)
+- **GitOps Synchronization**: Optional `--gitops-k8s` flag updates gitops-k8s manifests before rollout
+- **Verbose Mode**: Use `--verbose` to print every background `doq`/`kubectl` command
 
 ### 🎯 Smart Deployment Logic
 
@@ -643,6 +647,33 @@ doq deploy-k8s saas-apigateway production
 doq deploy-k8s saas-apigateway v1.0.0
 ```
 
+#### Override Namespace and Deployment
+
+```bash
+doq deploy-k8s saas-apigateway develop \
+  --namespace custom-namespace \
+  --deployment custom-deployment
+```
+
+#### Update GitOps Manifest Before Deploy
+
+```bash
+doq deploy-k8s saas-apigateway develop --gitops-k8s
+```
+
+This runs:
+
+```
+doq set-image-yaml gitops-k8s <refs>-qoin <namespace>/<deployment>_deployment.yaml <image>
+```
+
+Example for `refs=develop`, `PROJECT=saas`, `DEPLOYMENT=saas-apigateway`:
+
+- GitOps branch: `develop-qoin`
+- Namespace: `develop-saas`
+- Manifest path: `develop-saas/saas-apigateway_deployment.yaml`
+- Image: resolved automatically (or provided via `--image`)
+
 ### Custom Image Deployment
 
 #### Deploy Specific Version
@@ -666,6 +697,14 @@ doq deploy-k8s saas-apigateway production --image loyaltolpi/saas-apigateway:abc
 ```bash
 doq deploy-k8s myapp develop --image registry.company.com/myapp:latest
 ```
+
+#### Show Verbose Command Logs
+
+```bash
+doq deploy-k8s saas-apigateway staging --gitops-k8s --verbose
+```
+
+Verbose mode prints each auxiliary `doq` command (e.g., `doq image`, `doq set-image-yaml`, `doq ns`, `doq set-image`) so you can observe the underlying steps.
 
 ### JSON Output
 
@@ -833,6 +872,41 @@ curl -X POST "$SLACK_WEBHOOK" \
     }]
   }"
 ```
+
+### Microsoft Teams Notification
+
+```bash
+#!/bin/bash
+REPO="saas-apigateway"
+BRANCH="production"
+TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+
+echo "🚀 Deploying..."
+RESULT=$(doq deploy-k8s "$REPO" "$BRANCH" \
+  --namespace production-saas \
+  --deployment saas-apigateway \
+  --webhook "$TEAMS_WEBHOOK" \
+  --json)
+
+SUCCESS=$(echo "$RESULT" | jq -r '.success')
+IMAGE=$(echo "$RESULT" | jq -r '.image')
+ACTION=$(echo "$RESULT" | jq -r '.action')
+NAMESPACE=$(echo "$RESULT" | jq -r '.namespace')
+
+if [ "$SUCCESS" == "true" ]; then
+  echo "✅ Deployment succeeded ($ACTION → $IMAGE @ $NAMESPACE)"
+else
+  echo "❌ Deployment failed ($NAMESPACE)"
+fi
+```
+
+> **Tip:** You can skip the `--webhook` flag if you export the webhook URL:
+>
+> ```bash
+> export TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+> ```
+>
+> The CLI also reads `TEAMS_WEBHOOK` from `~/.doq/.env` if present.
 
 ### Rollback Script
 

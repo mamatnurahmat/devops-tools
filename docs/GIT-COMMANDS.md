@@ -42,6 +42,7 @@ These commands streamline Git workflow operations without requiring local reposi
 | **Pull Request** | Create PRs with automatic URL generation and branch management |
 | **JSON Output** | Support JSON format for automation and scripting |
 | **Error Handling** | Comprehensive error messages and validation |
+| **Teams Notifications** | Optional Teams webhook alert for PR creation & merge |
 
 ---
 
@@ -282,7 +283,7 @@ Create a pull request in Bitbucket repository from source branch to destination 
 #### Usage
 
 ```bash
-doq pull-request <repo> <src_branch> <dest_branch> [--delete]
+doq pull-request <repo> <src_branch> <dest_branch> [--delete] [--webhook <url>]
 ```
 
 #### Arguments
@@ -291,6 +292,7 @@ doq pull-request <repo> <src_branch> <dest_branch> [--delete]
 - `src_branch` - Source branch name (e.g., `feature-branch`)
 - `dest_branch` - Destination branch name (e.g., `develop`, `main`)
 - `--delete` - (Optional) Delete source branch after merge (default: False)
+- `--webhook` - (Optional) Microsoft Teams webhook URL (fallback to `TEAMS_WEBHOOK`)
 
 #### Features
 
@@ -298,6 +300,7 @@ doq pull-request <repo> <src_branch> <dest_branch> [--delete]
 - **PR Creation**: Creates pull request with automatic title generation
 - **Branch Management**: Optional deletion of source branch after merge
 - **URL Return**: Returns pull request URL for easy access
+- **Teams Notification**: Otomatis mengirim status ke Microsoft Teams (success/failed)
 
 #### Examples
 
@@ -339,6 +342,15 @@ Output:
    Pull Request URL: https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/484
 ```
 
+**Create Pull Request + Teams Notification:**
+
+```bash
+export TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+doq pull-request saas-apigateway feature/new-endpoint develop --webhook "$TEAMS_WEBHOOK"
+```
+
+> **Tip:** Jika `TEAMS_WEBHOOK` sudah diset di environment atau `~/.doq/.env`, flag `--webhook` boleh di-skip.
+
 #### Error Handling
 
 **Source Branch Not Found:**
@@ -368,13 +380,14 @@ Merge a pull request automatically from Bitbucket PR URL.
 #### Usage
 
 ```bash
-doq merge <pr_url> [--delete]
+doq merge <pr_url> [--delete] [--webhook <url>]
 ```
 
 #### Arguments
 
 - `pr_url` - Pull request URL (e.g., `https://bitbucket.org/loyaltoid/repo/pull-requests/123`)
 - `--delete` - (Optional) Delete source branch after merge (default: False)
+- `--webhook` - (Optional) Microsoft Teams webhook URL (fallback ke `TEAMS_WEBHOOK`)
 
 #### Features
 
@@ -383,6 +396,7 @@ doq merge <pr_url> [--delete]
 - **Automatic Merge**: Merges PR with single command
 - **Branch Management**: Optional deletion of source branch after merge
 - **Merge Commit**: Returns merge commit hash
+- **Teams Notification**: Kirim notifikasi merge ke Microsoft Teams (success/fail)
 
 #### Examples
 
@@ -426,18 +440,14 @@ Output:
    ⚠️  Source branch 'staging-qoinplus/plus-apigateway_deployment.yaml' will be deleted
 ```
 
-**Already Merged PR:**
+**Merge Pull Request + Teams Notification:**
 
 ```bash
-doq merge https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/483
+export TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+doq merge https://bitbucket.org/loyaltoid/gitops-k8s/pull-requests/483 --webhook "$TEAMS_WEBHOOK"
 ```
 
-Output:
-```
-🔍 Merging pull request #483 in repository 'gitops-k8s'...
-✅ Pull request #483 is already merged
-   Merge commit: a1b2c3d
-```
+> **Tip:** Simpan `TEAMS_WEBHOOK` di environment atau `~/.doq/.env` agar flag `--webhook` tidak perlu ditulis ulang.
 
 #### Error Handling
 

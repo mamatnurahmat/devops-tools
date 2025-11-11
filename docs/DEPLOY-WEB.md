@@ -36,6 +36,7 @@ Comprehensive guide for the `doq deploy-web` command - automated web application
 - 📦 **Image Validation**: Verifies image exists before deployment (auto mode)
 - 🎨 **Custom Images**: Support for custom image deployment
 - 📋 **JSON Output**: Machine-readable output for automation
+- 📢 **Teams Notifications**: Optional Microsoft Teams alerts for deployment status
 
 ---
 
@@ -52,6 +53,7 @@ Comprehensive guide for the `doq deploy-web` command - automated web application
 - **Remote Directory Creation**: Auto-creates deployment directories
 - **Docker Compose Generation**: Creates optimized compose files
 - **Container Management**: Handles pull, up, and restart operations
+- **Teams Webhook Alerts**: Kirim status deployment ke Microsoft Teams secara otomatis
 
 ### 🎯 Smart Deployment Logic
 
@@ -566,6 +568,7 @@ Override configuration with environment variables:
 export DOQ_SSH_USER="customuser"
 export DOQ_DOCKER_NAMESPACE="mycompany"
 export DOQ_BITBUCKET_ORG="my-org"
+export TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
 
 doq deploy-web myapp development
 ```
@@ -816,6 +819,33 @@ curl -X POST "$SLACK_WEBHOOK" \
     }]
   }"
 ```
+
+### Deployment with Teams Notification
+
+```bash
+#!/bin/bash
+REPO="saas-fe-webadmin"
+BRANCH="production"
+TEAMS_WEBHOOK="https://qoinid.webhook.office.com/webhookb2/63088020-7311-4b72-89eb-bc9f58447c9f@e38b30ee-ec18-44bd-8385-08e0acf73344/IncomingWebhook/bda6ddbee1994ed2889eef787ec2eb3e/3609c769-241b-4a44-86c7-f95526b7b84c/V2_ldAc5LeB3fhZC8wtt8TIDqaMKOZf15jYNcH4gl1V4c1"
+
+echo "🚀 Deploying..."
+RESULT=$(doq deploy-web "$REPO" "$BRANCH" \
+  --webhook "$TEAMS_WEBHOOK" \
+  --json)
+
+SUCCESS=$(echo "$RESULT" | jq -r '.success')
+ACTION=$(echo "$RESULT" | jq -r '.action')
+IMAGE=$(echo "$RESULT" | jq -r '.image')
+HOST=$(echo "$RESULT" | jq -r '.host')
+
+if [ "$SUCCESS" == "true" ]; then
+  echo "✅ Deployment succeeded ($ACTION → $IMAGE @ $HOST)"
+else
+  echo "❌ Deployment failed ($HOST)"
+fi
+```
+
+> **Tip:** Set `TEAMS_WEBHOOK` in your environment or `~/.doq/.env` to skip the `--webhook` flag.
 
 ### Automated Version Bumping
 

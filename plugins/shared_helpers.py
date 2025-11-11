@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import requests
 import os
 import base64
@@ -196,33 +196,68 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
     auth_data = _load_auth_from_file(auth_file_path)
     if auth_data is not None:
         return auth_data
+
+
+def resolve_teams_webhook(explicit_url: Optional[str] = None) -> Optional[str]:
+    """Resolve Microsoft Teams webhook from explicit value, env vars, or ~/.doq/.env."""
+    if explicit_url:
+        return explicit_url
     
-    # File not found or invalid, try fallback sources
-    # Start with environment variables
-    env_auth = _load_auth_from_env()
+    env_webhook = os.getenv('TEAMS_WEBHOOK')
+    if env_webhook:
+        return env_webhook
     
-    # If we found credentials in environment, auto-create auth.json
-    if env_auth and len(env_auth) >= 2:  # At least 2 credentials found
-        _persist_auth_file(auth_file_path, env_auth, "environment variables")
-        return env_auth
+    env_file = Path.home() / ".doq" / ".env"
+    if env_file.exists():
+        try:
+            from dotenv import load_dotenv  # Lazy import to avoid hard dependency elsewhere
+            load_dotenv(env_file, override=False)
+            env_webhook = os.getenv('TEAMS_WEBHOOK')
+            if env_webhook:
+                return env_webhook
+        except Exception as exc:
+            print(f"⚠️  Warning: Failed to load TEAMS_WEBHOOK from {env_file}: {exc}", file=sys.stderr)
     
-    # Try Docker config
-    docker_auth = _load_auth_from_docker()
-    env_auth.update(docker_auth)
+    return None
+
+
+def send_teams_notification(
+    webhook_url: str,
+    title: str,
+    facts: List[Tuple[str, str]],
+    success: bool,
+    summary: Optional[str] = None
+) -> None:
+    """Send a Microsoft Teams notification using MessageCard format."""
+    if not webhook_url:
+        return
     
-    # Try netrc
-    netrc_auth = _load_auth_from_netrc()
-    env_auth.update(netrc_auth)
+    summary_text = summary or title
+    theme_color = "2EB886" if success else "D13438"
+    emoji = "✅" if success else "❌"
     
-    # If any credentials gathered from docker/netrc, persist and return
-    if env_auth and len(env_auth) >= 2:
-        _persist_auth_file(auth_file_path, env_auth, "Docker/NETRC credentials")
-        return env_auth
+    payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "summary": summary_text,
+        "themeColor": theme_color,
+        "title": f"{emoji} {title}",
+        "sections": [
+            {
+                "facts": [
+                    {"name": name, "value": value or "-"}
+                    for name, value in facts
+                ]
+            }
+        ]
+    }
     
-    # No credentials found anywhere
-    raise FileNotFoundError(
-        f"Authentication file {auth_file_path} not found. Configure via 'doq login' or ensure ~/.docker/config.json and ~/.netrc are set."
-    )
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        if response.status_code >= 400:
+            print(f"⚠️  Warning: Teams webhook responded with HTTP {response.status_code}", file=sys.stderr)
+    except Exception as exc:
+        print(f"⚠️  Warning: Failed to send Teams notification: {exc}", file=sys.stderr)
 
 
 def validate_auth_file() -> Dict[str, Any]:

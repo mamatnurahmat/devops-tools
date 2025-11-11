@@ -10,7 +10,9 @@ from plugins.shared_helpers import (
     load_auth_file,
     fetch_bitbucket_file,
     get_commit_hash_from_bitbucket,
-    check_docker_image_exists
+    check_docker_image_exists,
+    resolve_teams_webhook,
+    send_teams_notification
 )
 from plugins.ssh_helper import (
     run_remote_command,
@@ -102,7 +104,14 @@ class WebDeployerConfig:
 class WebDeployer:
     """Web application deployer using Docker Compose."""
     
-    def __init__(self, repo: str, refs: str, custom_image: Optional[str] = None, config: Optional[WebDeployerConfig] = None):
+    def __init__(
+        self,
+        repo: str,
+        refs: str,
+        custom_image: Optional[str] = None,
+        config: Optional[WebDeployerConfig] = None,
+        webhook_url: Optional[str] = None
+    ):
         """Initialize web deployer.
         
         Args:
@@ -115,6 +124,7 @@ class WebDeployer:
         self.refs = refs
         self.custom_image = custom_image
         self.config = config or WebDeployerConfig()
+        self.webhook_url = resolve_teams_webhook(webhook_url)
         self.result = {
             'success': False,
             'action': 'unknown',
@@ -322,7 +332,7 @@ services:
                 self.result['success'] = True
                 self.result['action'] = 'skipped'
                 self.result['message'] = 'Already deployed with same image'
-                return 0
+                return self._finalize(0)
             
             # Generate docker-compose.yaml
             compose_content = self.generate_docker_compose(image_name, full_image, port)
@@ -338,14 +348,14 @@ services:
                 if not create_remote_directory(host, ssh_user, f"~/{self.repo}"):
                     print(f"❌ Error: Failed to create directory", file=sys.stderr)
                     self.result['message'] = 'Failed to create directory'
-                    return 1
+                    return self._finalize(1)
                 
                 # Upload docker-compose.yaml
                 print(f"📤 Uploading docker-compose.yaml...")
                 if not write_remote_file(host, ssh_user, compose_path, compose_content):
                     print(f"❌ Error: Failed to upload docker-compose.yaml", file=sys.stderr)
                     self.result['message'] = 'Failed to upload docker-compose.yaml'
-                    return 1
+                    return self._finalize(1)
                 
                 # Pull and start
                 print(f"🐳 Pulling image...")
@@ -355,7 +365,7 @@ services:
                 if not success:
                     print(f"❌ Error pulling image: {stderr}", file=sys.stderr)
                     self.result['message'] = f'Failed to pull image: {stderr}'
-                    return 1
+                    return self._finalize(1)
                 
                 print(f"🚀 Starting container...")
                 up_cmd = f"cd ~/{self.repo} && docker compose up -d"
@@ -364,12 +374,12 @@ services:
                 if not success:
                     print(f"❌ Error starting container: {stderr}", file=sys.stderr)
                     self.result['message'] = f'Failed to start container: {stderr}'
-                    return 1
+                    return self._finalize(1)
                 
                 print(f"✅ Deployment successful!")
                 self.result['success'] = True
                 self.result['message'] = 'Deployment successful'
-                return 0
+                return self._finalize(0)
                 
             else:
                 # Case C: Update existing
@@ -381,7 +391,7 @@ services:
                 if not write_remote_file(host, ssh_user, compose_path, compose_content):
                     print(f"❌ Error: Failed to update docker-compose.yaml", file=sys.stderr)
                     self.result['message'] = 'Failed to update docker-compose.yaml'
-                    return 1
+                    return self._finalize(1)
                 
                 # Pull and restart
                 print(f"🐳 Pulling new image...")
@@ -391,7 +401,7 @@ services:
                 if not success:
                     print(f"❌ Error pulling image: {stderr}", file=sys.stderr)
                     self.result['message'] = f'Failed to pull image: {stderr}'
-                    return 1
+                    return self._finalize(1)
                 
                 print(f"🔄 Restarting container...")
                 up_cmd = f"cd ~/{self.repo} && docker compose up -d"
@@ -400,17 +410,17 @@ services:
                 if not success:
                     print(f"❌ Error restarting container: {stderr}", file=sys.stderr)
                     self.result['message'] = f'Failed to restart container: {stderr}'
-                    return 1
+                    return self._finalize(1)
                 
                 print(f"✅ Update successful!")
                 self.result['success'] = True
                 self.result['message'] = 'Update successful'
-                return 0
+                return self._finalize(0)
         
         except Exception as e:
             print(f"❌ Error during deployment: {e}", file=sys.stderr)
             self.result['message'] = str(e)
-            return 1
+            return self._finalize(1)
     
     def get_result(self) -> Dict[str, Any]:
         """Get deployment result.
@@ -421,10 +431,58 @@ services:
         return self.result
 
 
+    def _send_webhook(self, success: bool):
+        """Send deployment summary to Microsoft Teams."""
+        if not self.webhook_url:
+            return
+        
+        environment = self.result.get('environment') or '-'
+        host = self.result.get('host') or '-'
+        image = self.result.get('image') or '-'
+        previous_image = self.result.get('previous_image') or '-'
+        action = self.result.get('action') or '-'
+        message = self.result.get('message') or '-'
+        
+        status_text = "SUCCESS" if success else "FAILED"
+        facts = [
+            ("Repository", self.repo),
+            ("Reference", self.refs),
+            ("Environment", environment),
+            ("Host", host),
+            ("Action", action),
+            ("Image", image),
+            ("Previous Image", previous_image),
+            ("Message", message),
+        ]
+        
+        send_teams_notification(
+            self.webhook_url,
+            title=f"Web Deployment {status_text}",
+            facts=facts,
+            success=success,
+            summary=f"Web Deployment {status_text}"
+        )
+    
+    def _finalize(self, exit_code: int) -> int:
+        """Finalize deployment by dispatching webhook notification."""
+        success = exit_code == 0
+        self.result['success'] = success
+        if not self.result.get('message'):
+            self.result['message'] = 'Deployment successful' if success else 'Deployment failed'
+        self._send_webhook(success)
+        return exit_code
+
+
 def cmd_deploy_web(args):
     """Command handler for 'doq deploy-web'."""
     custom_image = getattr(args, 'image', None)
-    deployer = WebDeployer(args.repo, args.refs, custom_image=custom_image)
+    webhook_url = getattr(args, 'webhook', None)
+    deployer = WebDeployer(
+        args.repo,
+        args.refs,
+        custom_image=custom_image,
+        webhook_url=webhook_url
+    )
     exit_code = deployer.deploy()
     
     # Output result as JSON
@@ -452,6 +510,8 @@ def register_commands(subparsers):
     deploy_web_parser.add_argument('refs', help='Branch or tag name (e.g., development, staging, production, v1.0.0)')
     deploy_web_parser.add_argument('--image', type=str, default=None,
                                    help='Custom Docker image to deploy (e.g., loyaltolpi/myapp:v1.0.0 or registry.io/app:latest)')
+    deploy_web_parser.add_argument('--webhook', type=str,
+                                   help='Microsoft Teams webhook URL for deployment notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
     deploy_web_parser.add_argument('--json', action='store_true',
                                    help='Output result in JSON format')
     deploy_web_parser.set_defaults(func=cmd_deploy_web)

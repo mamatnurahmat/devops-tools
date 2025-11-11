@@ -12,6 +12,9 @@ dependencies = [
     "urllib3<2.0",
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "python-multipart>=0.0.6",
 ]
 
 [project.scripts]
@@ -29,6 +32,7 @@ only-include = [
     "version.py",
     "plugin_manager.py",
     "config_utils.py",
+    "api_server.py",
     "plugins/__init__.py",
     "plugins/shared_helpers.py",
     "plugins/devops_ci.py",
@@ -36,6 +40,7 @@ only-include = [
     "plugins/ssh_helper.py",
     "plugins/web_deployer.py",
     "plugins/k8s_deployer.py",
+    "plugins/set_image_yaml.py",
     "README.md",
 ]
 

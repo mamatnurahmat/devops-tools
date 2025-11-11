@@ -17,7 +17,9 @@ from plugins.shared_helpers import (
     load_auth_file,
     check_docker_image_exists,
     fetch_bitbucket_file,
-    get_commit_hash_from_bitbucket
+    get_commit_hash_from_bitbucket,
+    resolve_teams_webhook,
+    send_teams_notification
 )
 
 
@@ -218,7 +220,8 @@ class DevOpsCIBuilder:
                  json_output: bool = False, short_output: bool = False,
                  custom_image: str = "", helper_mode: bool = False,
                  helper_args: Optional[Dict[str, str]] = None,
-                 builder_name: Optional[str] = None):
+                 builder_name: Optional[str] = None,
+                 webhook_url: Optional[str] = None):
         """Initialize builder with configuration."""
         self.repo = repo
         self.refs = refs
@@ -229,6 +232,7 @@ class DevOpsCIBuilder:
         self.helper_mode = helper_mode
         self.helper_args = helper_args or {}
         self.builder_name = builder_name
+        self.teams_webhook_url = resolve_teams_webhook(webhook_url)
         
         self.config = BuildConfig()
         self.build_dir = None
@@ -273,23 +277,31 @@ class DevOpsCIBuilder:
     
     def build(self) -> int:
         """Execute the build process."""
+        exit_code = 1
         try:
             if self.helper_mode:
                 if not self.short_output:
                     print("🔧 Running in HELPER MODE")
-                return self._build_helper_mode()
+                exit_code = self._build_helper_mode()
             else:
                 if not self.short_output:
                     print("🌐 Running in API MODE")
-                return self._build_api_mode()
-        
+                exit_code = self._build_api_mode()
         except Exception as e:
             self.result['message'] = str(e)
             if not self.short_output:
                 print(f"❌ Build failed: {e}", file=sys.stderr)
             if self.json_output:
                 print(json.dumps(self.result))
-            return 1
+            exit_code = 1
+        finally:
+            success = exit_code == 0 and self.result.get('success', False)
+            if not success and not self.result.get('message'):
+                self.result['message'] = 'Build failed'
+            self.result['success'] = success
+            self._send_teams_webhook(success)
+        
+        return exit_code
     
     def _build_api_mode(self) -> int:
         """Build using API mode (default)."""
@@ -679,6 +691,36 @@ class DevOpsCIBuilder:
             if not self.short_output:
                 print(f"⚠️  Warning: Failed to send notification to ntfy.sh: {e}")
     
+    def _send_teams_webhook(self, success: bool):
+        """Send build summary to Microsoft Teams."""
+        if not self.teams_webhook_url:
+            return
+        
+        image = self.result.get('image') or '-'
+        message = self.result.get('message') or '-'
+        status_text = "SUCCESS" if success else "FAILED"
+        action = 'built'
+        if message.lower().startswith('image already'):
+            action = 'skipped'
+        elif not success:
+            action = 'failed'
+        
+        facts = [
+            ("Repository", self.repo or '-'),
+            ("Reference", self.refs or '-'),
+            ("Action", action),
+            ("Image", image),
+            ("Message", message),
+        ]
+        
+        send_teams_notification(
+            self.teams_webhook_url,
+            title=f"DevOps CI Build {status_text}",
+            facts=facts,
+            success=success,
+            summary=f"DevOps CI Build {status_text}"
+        )
+    
     def _cleanup(self):
         """Clean up build directory."""
         if self.build_dir and os.path.exists(self.build_dir):
@@ -747,7 +789,8 @@ def cmd_devops_ci(args):
         custom_image=args.custom_image,
         helper_mode=helper_mode,
         helper_args=helper_args,
-        builder_name=getattr(args, 'use_builder', None)
+        builder_name=getattr(args, 'use_builder', None),
+        webhook_url=getattr(args, 'webhook', None)
     )
     
     # Run build
@@ -788,6 +831,8 @@ def register_commands(subparsers):
                                    help='Application port for build args (auto-enables helper mode)')
     devops_ci_parser.add_argument('--use-builder',
                                    help='Specify docker buildx builder name to use for the build')
+    devops_ci_parser.add_argument('--webhook', type=str,
+                                  help='Microsoft Teams webhook URL for build notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
     devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
                                    help='Show detailed DevOps CI help')
     devops_ci_parser.add_argument('--version-devops-ci', action='store_true',
