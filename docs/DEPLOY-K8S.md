@@ -51,6 +51,8 @@ Comprehensive guide for the `doq deploy-k8s` command - automated Kubernetes depl
 - **Error Handling**: Comprehensive validation and error messages
 - **Manual Overrides**: Force namespace/deployment values with CLI flags
 - **Teams Notifications**: Send deployment summaries to Microsoft Teams via webhook (auto-detects `TEAMS_WEBHOOK`)
+- **GitOps Synchronization**: Optional `--gitops-k8s` flag updates gitops-k8s manifests before rollout
+- **Verbose Mode**: Use `--verbose` to print every background `doq`/`kubectl` command
 
 ### 🎯 Smart Deployment Logic
 
@@ -653,6 +655,25 @@ doq deploy-k8s saas-apigateway develop \
   --deployment custom-deployment
 ```
 
+#### Update GitOps Manifest Before Deploy
+
+```bash
+doq deploy-k8s saas-apigateway develop --gitops-k8s
+```
+
+This runs:
+
+```
+doq set-image-yaml gitops-k8s <refs>-qoin <namespace>/<deployment>_deployment.yaml <image>
+```
+
+Example for `refs=develop`, `PROJECT=saas`, `DEPLOYMENT=saas-apigateway`:
+
+- GitOps branch: `develop-qoin`
+- Namespace: `develop-saas`
+- Manifest path: `develop-saas/saas-apigateway_deployment.yaml`
+- Image: resolved automatically (or provided via `--image`)
+
 ### Custom Image Deployment
 
 #### Deploy Specific Version
@@ -676,6 +697,14 @@ doq deploy-k8s saas-apigateway production --image loyaltolpi/saas-apigateway:abc
 ```bash
 doq deploy-k8s myapp develop --image registry.company.com/myapp:latest
 ```
+
+#### Show Verbose Command Logs
+
+```bash
+doq deploy-k8s saas-apigateway staging --gitops-k8s --verbose
+```
+
+Verbose mode prints each auxiliary `doq` command (e.g., `doq image`, `doq set-image-yaml`, `doq ns`, `doq set-image`) so you can observe the underlying steps.
 
 ### JSON Output
 

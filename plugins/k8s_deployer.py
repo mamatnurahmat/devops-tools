@@ -91,7 +91,9 @@ class K8sDeployer:
         config: Optional[K8sDeployerConfig] = None,
         namespace_override: Optional[str] = None,
         deployment_override: Optional[str] = None,
-        webhook_url: Optional[str] = None
+        webhook_url: Optional[str] = None,
+        gitops_mode: bool = False,
+        verbose: bool = False
     ):
         """Initialize K8s deployer.
         
@@ -108,6 +110,8 @@ class K8sDeployer:
         self.namespace_override = namespace_override
         self.deployment_override = deployment_override
         self.webhook_url = resolve_teams_webhook(webhook_url)
+        self.gitops_mode = gitops_mode
+        self.verbose = verbose
         self.result = {
             'success': False,
             'action': 'unknown',
@@ -173,7 +177,7 @@ class K8sDeployer:
         """
         try:
             # Run doq image command
-            result = subprocess.run(
+            result = self._run_subprocess(
                 ['doq', 'image', self.repo, self.refs, '--json'],
                 capture_output=True,
                 text=True,
@@ -182,7 +186,7 @@ class K8sDeployer:
             
             if result.returncode != 0:
                 print(f"❌ Error checking image status", file=sys.stderr)
-                if result.stderr:
+                if result.stderr and not self.verbose:
                     print(result.stderr, file=sys.stderr)
                 return None
             
@@ -218,7 +222,7 @@ class K8sDeployer:
         """
         try:
             # Run doq get-image command
-            result = subprocess.run(
+            result = self._run_subprocess(
                 ['doq', 'get-image', namespace, deployment],
                 capture_output=True,
                 text=True,
@@ -261,7 +265,7 @@ class K8sDeployer:
         """
         try:
             # Run doq ns command
-            result = subprocess.run(
+            result = self._run_subprocess(
                 ['doq', 'ns', namespace],
                 capture_output=True,
                 text=True,
@@ -270,7 +274,7 @@ class K8sDeployer:
             
             if result.returncode != 0:
                 print(f"❌ Failed to switch context", file=sys.stderr)
-                if result.stderr:
+                if result.stderr and not self.verbose:
                     print(result.stderr, file=sys.stderr)
                 return False
             
@@ -296,7 +300,7 @@ class K8sDeployer:
         """
         try:
             # Run doq set-image command
-            result = subprocess.run(
+            result = self._run_subprocess(
                 ['doq', 'set-image', namespace, deployment, image],
                 capture_output=True,
                 text=True,
@@ -305,12 +309,12 @@ class K8sDeployer:
             
             if result.returncode != 0:
                 print(f"❌ Failed to set image", file=sys.stderr)
-                if result.stderr:
+                if result.stderr and not self.verbose:
                     print(result.stderr, file=sys.stderr)
                 return False
             
             # Print command output
-            if result.stdout:
+            if result.stdout and not self.verbose:
                 print(result.stdout, end='')
             
             return True
@@ -381,12 +385,20 @@ class K8sDeployer:
             
             self.result['image'] = full_image
             
-            # Step 5: Get current deployment image
+            # Step 5 (optional): Update GitOps manifests
+            if self.gitops_mode:
+                print(f"🧩 Updating GitOps manifest in gitops-k8s repository...")
+                if not self.update_gitops_manifest(namespace, deployment, full_image):
+                    self.result['message'] = 'Failed to update gitops-k8s manifest'
+                    return self._finalize(1)
+                print(f"✅ GitOps manifest updated")
+            
+            # Step 6: Get current deployment image
             print(f"🔍 Checking current deployment...")
             current_image = self.get_current_image(namespace, deployment)
             self.result['previous_image'] = current_image
             
-            # Step 6: Compare images
+            # Step 7: Compare images
             if current_image:
                 if current_image == full_image:
                     # Same image - skip deployment
@@ -408,14 +420,14 @@ class K8sDeployer:
                 print(f"📦 New deployment (not found)")
                 self.result['action'] = 'deployed'
             
-            # Step 7: Switch context
+            # Step 8: Switch context
             print(f"🔄 Switching context to {namespace}...")
             if not self.switch_context(namespace):
                 self.result['message'] = 'Failed to switch context'
                 return self._finalize(1)
             print(f"✅ Context switched")
             
-            # Step 8: Deploy image
+            # Step 9: Deploy image
             action_verb = "Updating" if current_image else "Deploying"
             print(f"🚀 {action_verb} image...")
             if not self.set_image(namespace, deployment, full_image):
@@ -484,6 +496,69 @@ class K8sDeployer:
         if self.webhook_url:
             self.send_webhook(success)
         return exit_code
+    
+    def _run_subprocess(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+        """Run subprocess command with optional verbose logging."""
+        capture_output = kwargs.get('capture_output', False)
+        text_mode = kwargs.get('text', True)
+        
+        if self.verbose:
+            print(f"   ↳ Running: {' '.join(command)}")
+        
+        result = subprocess.run(command, **kwargs)
+        
+        if self.verbose and capture_output:
+            if result.stdout:
+                end = '' if text_mode else None
+                print(result.stdout, end=end)
+            if result.stderr:
+                end = '' if text_mode else None
+                print(result.stderr, file=sys.stderr, end=end)
+        
+        return result
+    
+    def update_gitops_manifest(self, namespace: str, deployment: str, image: str) -> bool:
+        """Update gitops-k8s repository manifests using set-image-yaml."""
+        branch = f"{self.refs}-qoin"
+        manifest_path = f"{namespace}/{deployment}_deployment.yaml"
+        
+        print(f"   ➤ Branch: {branch}")
+        print(f"   ➤ Path:   {manifest_path}")
+        print(f"   ➤ Image:  {image}")
+        
+        try:
+            result = self._run_subprocess(
+                [
+                    'doq',
+                    'set-image-yaml',
+                    'gitops-k8s',
+                    branch,
+                    manifest_path,
+                    image
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            
+            if result.returncode != 0:
+                print(f"❌ Failed to update gitops-k8s manifest", file=sys.stderr)
+                if result.stdout and not self.verbose:
+                    print(result.stdout, file=sys.stderr)
+                if result.stderr and not self.verbose:
+                    print(result.stderr, file=sys.stderr)
+                return False
+            
+            if result.stdout and not self.verbose:
+                print(result.stdout, end='')
+            
+            return True
+        except subprocess.TimeoutExpired:
+            print(f"❌ Timeout updating gitops-k8s manifest", file=sys.stderr)
+            return False
+        except Exception as exc:
+            print(f"❌ Error updating gitops-k8s manifest: {exc}", file=sys.stderr)
+            return False
 
 
 def cmd_deploy_k8s(args):
@@ -492,13 +567,17 @@ def cmd_deploy_k8s(args):
     namespace_override = getattr(args, 'namespace', None)
     deployment_override = getattr(args, 'deployment', None)
     webhook_url = getattr(args, 'webhook', None)
+    gitops_mode = getattr(args, 'gitops_k8s', False)
+    verbose = getattr(args, 'verbose', False)
     deployer = K8sDeployer(
         args.repo,
         args.refs,
         custom_image=custom_image,
         namespace_override=namespace_override,
         deployment_override=deployment_override,
-        webhook_url=webhook_url
+        webhook_url=webhook_url,
+        gitops_mode=gitops_mode,
+        verbose=verbose
     )
     exit_code = deployer.deploy()
     
@@ -533,6 +612,10 @@ def register_commands(subparsers):
                                    help='Override Kubernetes deployment name')
     deploy_k8s_parser.add_argument('--webhook', type=str,
                                    help='Microsoft Teams webhook URL for deployment notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
+    deploy_k8s_parser.add_argument('--gitops-k8s', action='store_true',
+                                   help='Also update gitops-k8s repository manifest before deployment')
+    deploy_k8s_parser.add_argument('--verbose', action='store_true',
+                                   help='Show underlying doq/kubectl commands being executed')
     deploy_k8s_parser.add_argument('--json', action='store_true',
                                    help='Output result in JSON format')
     deploy_k8s_parser.set_defaults(func=cmd_deploy_k8s)
