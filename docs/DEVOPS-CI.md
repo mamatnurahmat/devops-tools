@@ -72,6 +72,7 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 |------|---------------|---------------|-----------|----------|
 | **API Mode** | ✅ Required | API endpoint | ✅ Yes | Production CI/CD |
 | **Helper Mode** | ❌ Not required | Local config | ❌ No | Development/Testing |
+| **Local Mode** | ❌ Not required | Local `cicd/cicd.json` | ✅ Yes | Build dari working tree saat ini |
 
 ---
 
@@ -374,6 +375,31 @@ GITHUB_USER=your-github-user
 GITHUB_TOKEN=your-github-token
 GITUSERTOKEN=your-git-token
 ```
+
+### Local Mode
+
+**Mode lokal** memanfaatkan working tree saat ini sebagai sumber build dan konfigurasi.
+
+#### How It Works
+
+1. Mengambil metadata git lokal dengan `git rev-parse <refs>`
+2. Membaca `cicd/cicd.json` dari direktori kerja saat ini
+3. Mengecek apakah image sudah tersedia di registry (skip bila sudah ada, kecuali `--rebuild`)
+4. Menjalankan `docker buildx build --push` langsung dari direktori lokal (tanpa git clone)
+
+#### Requirements
+
+- Jalankan perintah dari root repository git yang sesuai
+- File `cicd/cicd.json` tersedia di direktori `cicd/`
+- Credentials registry tetap tersimpan di `~/.doq/auth.json`
+
+#### Example
+
+```bash
+doq devops-ci saas-be-core develop --local
+```
+
+> Build tetap menggunakan `docker buildx build --push` sehingga image langsung dipublish ke registry. Anda dapat mengkombinasikan `--local` dengan `--rebuild`, `--json`, `--short`, ataupun `--image-name`.
 
 ---
 
