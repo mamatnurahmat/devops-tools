@@ -25,6 +25,7 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 - **Multi-platform builds** dengan Docker Buildx
 - **SBOM** (Software Bill of Materials) generation
 - **Provenance attestation** untuk supply chain security
+- **Deterministic rebuilds** dengan cache-disabled build steps
 - **Resource management** (CPU dan memory limits)
 - **Dual-mode operation**: API mode dan Helper mode
 - **Auto image caching** untuk skip unnecessary rebuilds
@@ -50,8 +51,9 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 | **Multi-platform Build** | Build untuk berbagai platform/arsitektur |
 | **SBOM Generation** | Software Bill of Materials untuk security compliance |
 | **Provenance Attestation** | Cryptographic attestation untuk supply chain security |
+| **Deterministic Build** | Buildx otomatis menggunakan `--attest type=provenance,mode=max` dan `--no-cache` untuk jaminan integritas |
 | **Resource Management** | CPU dan memory limits untuk builder container |
-| **Auto Image Caching** | Skip build jika image sudah ready (API mode) |
+| **Auto Skip Existing Image** | Skip build jika image sudah ready (API mode) sehingga tetap efisien meski build dijalankan tanpa cache |
 | **Git Submodule Workaround** | Pre-clone dengan `--no-recurse-submodules` |
 | **Buildx Permission Fix** | Auto-fix permission issues di Docker buildx directory |
 | **Real-time Notifications** | Send build status ke ntfy.sh atau Microsoft Teams webhook |
@@ -135,6 +137,8 @@ docker buildx inspect --bootstrap
 doq devops-ci saas-be-core develop
 ```
 
+> Catatan: Setiap eksekusi buildx akan otomatis menambahkan `--attest type=provenance,mode=max` dan `--no-cache` untuk menghasilkan provenance SLSA maksimal dan menghindari reuse cache lama.
+
 Output:
 ```
 🌐 Running in API MODE
@@ -177,6 +181,7 @@ Output:
 3. **Auto-Skip** jika image sudah ready (kecuali `--rebuild`)
 
 4. **Build** dengan config dari API
+   - Docker Buildx dijalankan dengan `--attest type=provenance,mode=max` dan `--no-cache` untuk menghasilkan provenance maksimal dan mencegah reuse layer lama
 
 #### When to Use
 
@@ -225,6 +230,7 @@ doq devops-ci saas-be-core develop --json
    - CLI arguments
 
 3. **Build** dengan config lokal (no API calls)
+   - Buildx juga menjalankan `--attest type=provenance,mode=max` dan `--no-cache` untuk konsistensi dengan API mode
 
 #### When to Use
 

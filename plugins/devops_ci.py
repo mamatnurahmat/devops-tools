@@ -60,6 +60,7 @@ ARGUMENTS:
 
 OPTIONS:
     --rebuild       Force rebuild even if image already exists
+    --no-cache      Disable Docker layer caching during build
     --json          Show build progress + JSON result at end
     --short         Silent build, output only image name
     --helper        Use helper mode (no API dependency)
@@ -73,6 +74,9 @@ EXAMPLES:
 
     # Force rebuild
     doq devops-ci saas-be-core develop --rebuild
+
+    # Force rebuild with no cache
+    doq devops-ci saas-be-core develop --rebuild --no-cache
 
     # Use helper mode
     doq devops-ci saas-be-core develop --helper
@@ -221,7 +225,7 @@ class DevOpsCIBuilder:
                  custom_image: str = "", helper_mode: bool = False,
                  helper_args: Optional[Dict[str, str]] = None,
                  builder_name: Optional[str] = None,
-                 webhook_url: Optional[str] = None):
+                 webhook_url: Optional[str] = None, no_cache: bool = False):
         """Initialize builder with configuration."""
         self.repo = repo
         self.refs = refs
@@ -233,6 +237,7 @@ class DevOpsCIBuilder:
         self.helper_args = helper_args or {}
         self.builder_name = builder_name
         self.teams_webhook_url = resolve_teams_webhook(webhook_url)
+        self.no_cache = no_cache
         
         self.config = BuildConfig()
         self.build_dir = None
@@ -608,6 +613,11 @@ class DevOpsCIBuilder:
                 '--push'
             ])
             build_cmd += buildx_args
+            build_cmd.extend([
+                '--attest', 'type=provenance,mode=max'
+            ])
+            if self.no_cache:
+                build_cmd.append('--no-cache')
             
             # Add build args from cicd.json
             if build_config:
@@ -790,7 +800,8 @@ def cmd_devops_ci(args):
         helper_mode=helper_mode,
         helper_args=helper_args,
         builder_name=getattr(args, 'use_builder', None),
-        webhook_url=getattr(args, 'webhook', None)
+        webhook_url=getattr(args, 'webhook', None),
+        no_cache=args.no_cache
     )
     
     # Run build
@@ -817,6 +828,8 @@ def register_commands(subparsers):
                                    help='(Optional) Custom image name/tag to override default')
     devops_ci_parser.add_argument('--rebuild', action='store_true',
                                    help='Force rebuild even if image already exists')
+    devops_ci_parser.add_argument('--no-cache', action='store_true',
+                                   help='Disable Docker layer caching during build')
     devops_ci_parser.add_argument('--json', action='store_true',
                                    help='Show build progress + JSON result at end')
     devops_ci_parser.add_argument('--short', action='store_true',
