@@ -8,6 +8,123 @@ DevOps Q tools support multiple authentication methods for accessing Docker Hub 
 2. **Environment Variables** (Fallback): Auto-detected and auto-creates auth.json
 3. **Login Command**: Interactive setup via `doq login`
 
+### Auth API Bootstrap (Automatic)
+
+Starting with the current release, `doq login` will attempt to populate `~/.doq/auth.json` automatically when it is missing or incomplete:
+
+1. The command logs in to Rancher and obtains a bearer token.
+2. If `~/.doq/auth.json` does not exist, is empty, or is missing required fields, the CLI performs an HTTPS GET to:
+
+   ```
+   {RANCHER_URL}/api/v1/namespaces/default/services/http:auth-api:8080/proxy/v1/auth/{username}
+   ```
+
+   - `{RANCHER_URL}` is the URL passed to `doq login` (default `https://193.1.1.4`)
+   - `{username}` is the login username (e.g., `doq`)
+   - The request includes the Rancher bearer token in the `Authorization: Bearer …` header and honours the `--insecure/--no-insecure` flag (`-k` behaviour).
+
+3. The API response resembles:
+
+   ```json
+   {
+     "name": "doq",
+     "value": "{\r\n  \"DOCKERHUB_USER\": \"newrahmat\",\r\n  \"DOCKERHUB_PASSWORD\": \"87d1df79...\",\r\n  \"GIT_USER\": \"newrahmat\",\r\n  \"GIT_PASSWORD\": \"bTYhLgGf...\"\r\n}"
+   }
+   ```
+
+4. The CLI parses the `value` payload, writes it to `~/.doq/auth.json` with `0600` permissions, and prints:
+
+   ```
+   ✅ Bootstrapped credentials to ~/.doq/auth.json
+   ```
+
+5. **Force Mode**: Use `doq login --force` to skip user confirmation and automatically create `~/.doq/auth.json` without prompting.
+
+If the request fails (network error, 404, invalid payload), the CLI prints a warning and continues without aborting the login flow.
+
+#### Manual verification steps
+
+1. Backup and remove existing credentials:
+
+   ```bash
+   mv ~/.doq/auth.json ~/.doq/auth.json.bak 2>/dev/null || true
+   ```
+
+2. Run `doq login` with valid Rancher credentials.
+3. Observe the bootstrap process:
+   - `ℹ️  auth.json not found.`
+   - `🔍 Attempting to fetch credentials from auth-api...`
+   - `✅ Successfully fetched credentials from auth-api`
+   - `📋 Found credentials for: Docker Hub, Bitbucket`
+   - `Save credentials to ~/.doq/auth.json? (y/N):`
+4. Type `y` to confirm saving, or `n` to skip.
+
+**For automated scripts**: Use `doq login --force` to skip confirmation and automatically create `~/.doq/auth.json`.
+
+**To update existing credentials**: Use `doq login --update-auth` to refresh `~/.doq/auth.json` with the latest credentials from auth-api without re-login.
+
+5. Inspect the generated file:
+
+   ```bash
+   cat ~/.doq/auth.json
+   ```
+
+6. (Optional) Call the same API manually to confirm the payload:
+
+   ```bash
+   curl -k -H "Authorization: Bearer <token>" \
+     "https://193.1.1.4/api/v1/namespaces/default/services/http:auth-api:8080/proxy/v1/auth/<username>"
+   ```
+
+#### Fallback behavior
+
+If auth-api is unavailable, the system falls back to local sources:
+
+1. **~/.docker/config.json** - Docker Hub credentials
+2. **~/.netrc** - Bitbucket credentials
+3. **Environment variables** - DOCKERHUB_USER/PASSWORD, GIT_USER/PASSWORD
+
+The system will show what credentials were found and ask for confirmation before saving.
+
+#### Remote-only mode
+
+Jika ingin memaksa penggunaan auth-api (tanpa fallback lokal), set flag `RANCHER_AUTH`:
+
+- Via environment variable:
+
+  ```bash
+  export RANCHER_AUTH=true
+  ```
+
+- Atau tambahkan ke `~/.doq/.env`:
+
+  ```env
+  RANCHER_AUTH=true
+  ```
+
+Jika `RANCHER_AUTH=true`, `doq login`:
+
+1. Hanya mencoba mengambil kredensial dari auth-api berdasarkan username login.
+2. Berhenti dengan error jika fetch gagal (tidak menggunakan fallback lokal).
+3. Tetap meminta konfirmasi sebelum menyimpan ke `~/.doq/auth.json`.
+
+### Verifying stored credentials
+
+Gunakan perintah berikut untuk memastikan `auth.json`, kredensial Docker Hub/Bitbucket, dan token Rancher masih valid:
+
+```bash
+doq check
+```
+
+Perintah ini:
+
+- Mengecek kelengkapan `~/.doq/auth.json`
+- Melakukan login ke Docker Hub API dengan `DOCKERHUB_USER/DOCKERHUB_PASSWORD`
+- Melakukan autentikasi ke Bitbucket API dengan `GIT_USER/GIT_PASSWORD`
+- Mengecek status token Rancher (valid/expired) dengan menghormati opsi `--insecure/--secure`
+
+Output `--json` menyajikan status terstruktur untuk tiap layanan.
+
 ## Priority & Auto-Creation
 
 The authentication system follows this priority:
@@ -15,11 +132,78 @@ The authentication system follows this priority:
 ```
 1. Load from ~/.doq/auth.json (if exists)
    └─> Success: Use credentials from file
-   
-2. File not found? Try environment variables
-   └─> Found credentials in ENV?
-       ├─> Yes: Auto-create ~/.doq/auth.json and use credentials
-       └─> No: Error - prompt user to run 'doq login'
+
+2. File not found or incomplete? Check RANCHER_AUTH setting
+   └─> RANCHER_AUTH=true?
+       ├─> Yes: Try auth-api (during doq login)
+       │   ├─> Fetched from API: Ask user confirmation, then save to ~/.doq/auth.json
+       │   └─> API failed: Error - remote-only mode requires auth-api
+       └─> No: Try local sources (~/.docker/config.json, ~/.netrc, environment)
+           ├─> Found: Ask user confirmation, then save to ~/.doq/auth.json
+           └─> None found: Error - provide guidance on credential sources
+
+3. Commands requiring auth when ~/.doq/auth.json missing
+   └─> RANCHER_AUTH=true: Error directing user to run 'doq login'
+   └─> RANCHER_AUTH=false/unset: Error with local credential guidance
+```
+
+## Environment Variables
+
+### RANCHER_AUTH
+
+**Purpose**: Controls credential bootstrap behavior when `~/.doq/auth.json` is missing.
+
+**Values**:
+- `true`: Enable remote-only authentication mode
+  - Commands requiring credentials will fail with instructions to run `doq login`
+  - `doq login` will only fetch from auth-api, skipping local fallbacks
+  - `doq check` can run without auth.json (skips credential validation)
+- `false` or unset: Standard mode (default)
+  - Fallback to local sources when auth-api unavailable
+
+**Usage**:
+```bash
+export RANCHER_AUTH='true'
+doq login  # Only tries auth-api
+doq check  # Works without ~/.doq/auth.json
+```
+
+**Configuration**: Set via environment variable or `~/.doq/.env`:
+```bash
+# ~/.doq/.env
+RANCHER_AUTH=true
+```
+
+## Login Command Options
+
+The `doq login` command supports several flags for different authentication scenarios:
+
+### --force
+Forces re-login even when a valid token exists. Automatically creates `~/.doq/auth.json` without user confirmation.
+
+```bash
+doq login --force  # Automated login for scripts
+```
+
+### --update-auth
+Updates `~/.doq/auth.json` with the latest credentials from auth-api using the existing Rancher configuration. Does not perform re-login.
+
+```bash
+doq login --update-auth  # Refresh credentials without re-login
+```
+
+### --username / --password
+Provide credentials directly (useful for automated scripts):
+
+```bash
+doq login --username myuser --password mypass
+```
+
+### --url / --insecure
+Override default Rancher URL and SSL settings:
+
+```bash
+doq login --url https://my-rancher.com --insecure
 ```
 
 ## Auth File Format

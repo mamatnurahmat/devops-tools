@@ -21,16 +21,19 @@ def load_config():
     return {
         'url': os.getenv('RANCHER_URL', ''),
         'token': os.getenv('RANCHER_TOKEN', ''),
-        'insecure': os.getenv('RANCHER_INSECURE', 'true').lower() == 'true'
+        'insecure': os.getenv('RANCHER_INSECURE', 'true').lower() == 'true',
+        'username': os.getenv('RANCHER_USER', '')
     }
 
 
-def save_config(url, token, insecure=True):
+def save_config(url, token, insecure=True, username=None):
     """Save configuration to $HOME/.doq/.env"""
     ensure_config_dir()
     set_key(CONFIG_FILE, 'RANCHER_URL', url)
     set_key(CONFIG_FILE, 'RANCHER_TOKEN', token)
     set_key(CONFIG_FILE, 'RANCHER_INSECURE', str(insecure).lower())
+    if username:
+        set_key(CONFIG_FILE, 'RANCHER_USER', username)
 
 
 def get_config_file_path():

@@ -282,7 +282,14 @@ def validate_auth_file() -> Dict[str, Any]:
             'missing_fields': ['DOCKERHUB_USER', 'DOCKERHUB_PASSWORD', 'GIT_USER', 'GIT_PASSWORD'],
             'message': '~/.doq/auth.json not found or empty'
         }
-    
+
+    if auth_data is None:
+        return {
+            'valid': False,
+            'missing_fields': ['DOCKERHUB_USER', 'DOCKERHUB_PASSWORD', 'GIT_USER', 'GIT_PASSWORD'],
+            'message': '~/.doq/auth.json not found or empty'
+        }
+
     missing = []
     for category, fields in required_fields.items():
         for field in fields:
