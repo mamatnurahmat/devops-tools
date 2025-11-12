@@ -25,6 +25,7 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 - **Multi-platform builds** dengan Docker Buildx
 - **SBOM** (Software Bill of Materials) generation
 - **Provenance attestation** untuk supply chain security
+- **Deterministic rebuilds** dengan cache-disabled build steps
 - **Resource management** (CPU dan memory limits)
 - **Dual-mode operation**: API mode dan Helper mode
 - **Auto image caching** untuk skip unnecessary rebuilds
@@ -50,8 +51,9 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 | **Multi-platform Build** | Build untuk berbagai platform/arsitektur |
 | **SBOM Generation** | Software Bill of Materials untuk security compliance |
 | **Provenance Attestation** | Cryptographic attestation untuk supply chain security |
+| **Deterministic Build** | Buildx otomatis menggunakan `--attest type=provenance,mode=max` dan `--no-cache` untuk jaminan integritas |
 | **Resource Management** | CPU dan memory limits untuk builder container |
-| **Auto Image Caching** | Skip build jika image sudah ready (API mode) |
+| **Auto Skip Existing Image** | Skip build jika image sudah ready (API mode) sehingga tetap efisien meski build dijalankan tanpa cache |
 | **Git Submodule Workaround** | Pre-clone dengan `--no-recurse-submodules` |
 | **Buildx Permission Fix** | Auto-fix permission issues di Docker buildx directory |
 | **Real-time Notifications** | Send build status ke ntfy.sh atau Microsoft Teams webhook |
@@ -70,6 +72,7 @@ DevOps CI adalah Docker image builder tool yang mendukung:
 |------|---------------|---------------|-----------|----------|
 | **API Mode** | ✅ Required | API endpoint | ✅ Yes | Production CI/CD |
 | **Helper Mode** | ❌ Not required | Local config | ❌ No | Development/Testing |
+| **Local Mode** | ❌ Not required | Local `cicd/cicd.json` | ✅ Yes | Build dari working tree saat ini |
 
 ---
 
@@ -135,6 +138,8 @@ docker buildx inspect --bootstrap
 doq devops-ci saas-be-core develop
 ```
 
+> Catatan: Setiap eksekusi buildx akan otomatis menambahkan `--attest type=provenance,mode=max` dan `--no-cache` untuk menghasilkan provenance SLSA maksimal dan menghindari reuse cache lama.
+
 Output:
 ```
 🌐 Running in API MODE
@@ -177,6 +182,7 @@ Output:
 3. **Auto-Skip** jika image sudah ready (kecuali `--rebuild`)
 
 4. **Build** dengan config dari API
+   - Docker Buildx dijalankan dengan `--attest type=provenance,mode=max` dan `--no-cache` untuk menghasilkan provenance maksimal dan mencegah reuse layer lama
 
 #### When to Use
 
@@ -225,6 +231,7 @@ doq devops-ci saas-be-core develop --json
    - CLI arguments
 
 3. **Build** dengan config lokal (no API calls)
+   - Buildx juga menjalankan `--attest type=provenance,mode=max` dan `--no-cache` untuk konsistensi dengan API mode
 
 #### When to Use
 
@@ -368,6 +375,31 @@ GITHUB_USER=your-github-user
 GITHUB_TOKEN=your-github-token
 GITUSERTOKEN=your-git-token
 ```
+
+### Local Mode
+
+**Mode lokal** memanfaatkan working tree saat ini sebagai sumber build dan konfigurasi.
+
+#### How It Works
+
+1. Mengambil metadata git lokal dengan `git rev-parse <refs>`
+2. Membaca `cicd/cicd.json` dari direktori kerja saat ini
+3. Mengecek apakah image sudah tersedia di registry (skip bila sudah ada, kecuali `--rebuild`)
+4. Menjalankan `docker buildx build --push` langsung dari direktori lokal (tanpa git clone)
+
+#### Requirements
+
+- Jalankan perintah dari root repository git yang sesuai
+- File `cicd/cicd.json` tersedia di direktori `cicd/`
+- Credentials registry tetap tersimpan di `~/.doq/auth.json`
+
+#### Example
+
+```bash
+doq devops-ci saas-be-core develop --local
+```
+
+> Build tetap menggunakan `docker buildx build --push` sehingga image langsung dipublish ke registry. Anda dapat mengkombinasikan `--local` dengan `--rebuild`, `--json`, `--short`, ataupun `--image-name`.
 
 ---
 

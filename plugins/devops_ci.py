@@ -60,8 +60,10 @@ ARGUMENTS:
 
 OPTIONS:
     --rebuild       Force rebuild even if image already exists
+    --no-cache      Disable Docker layer caching during build
     --json          Show build progress + JSON result at end
     --short         Silent build, output only image name
+    --local         Build from current working directory using local cicd/cicd.json
     --helper        Use helper mode (no API dependency)
     --image-name    (Helper mode) Custom image name to build
     --registry      (Helper mode) Registry URL for build args
@@ -73,6 +75,9 @@ EXAMPLES:
 
     # Force rebuild
     doq devops-ci saas-be-core develop --rebuild
+
+    # Force rebuild with no cache
+    doq devops-ci saas-be-core develop --rebuild --no-cache
 
     # Use helper mode
     doq devops-ci saas-be-core develop --helper
@@ -221,7 +226,8 @@ class DevOpsCIBuilder:
                  custom_image: str = "", helper_mode: bool = False,
                  helper_args: Optional[Dict[str, str]] = None,
                  builder_name: Optional[str] = None,
-                 webhook_url: Optional[str] = None):
+                 webhook_url: Optional[str] = None, no_cache: bool = False,
+                 local_mode: bool = False):
         """Initialize builder with configuration."""
         self.repo = repo
         self.refs = refs
@@ -233,6 +239,8 @@ class DevOpsCIBuilder:
         self.helper_args = helper_args or {}
         self.builder_name = builder_name
         self.teams_webhook_url = resolve_teams_webhook(webhook_url)
+        self.no_cache = no_cache
+        self.local_mode = local_mode
         
         self.config = BuildConfig()
         self.build_dir = None
@@ -279,7 +287,11 @@ class DevOpsCIBuilder:
         """Execute the build process."""
         exit_code = 1
         try:
-            if self.helper_mode:
+            if self.local_mode:
+                if not self.short_output:
+                    print("🏠 Running in LOCAL MODE")
+                exit_code = self._build_local_mode()
+            elif self.helper_mode:
                 if not self.short_output:
                     print("🔧 Running in HELPER MODE")
                 exit_code = self._build_helper_mode()
@@ -408,6 +420,140 @@ class DevOpsCIBuilder:
         self._output_build_result(metadata)
         
         return 0
+
+    def _build_local_mode(self) -> int:
+        """Build using local working directory as build context."""
+        repo_path = Path.cwd()
+        
+        # Load auth for registry checks/push
+        try:
+            auth_data = load_auth_file()
+        except FileNotFoundError as e:
+            if not self.short_output:
+                print(f"❌ {e}", file=sys.stderr)
+            return 1
+        
+        # Load local cicd configuration
+        try:
+            build_config = self._load_local_build_config(repo_path)
+        except Exception as e:
+            if not self.short_output:
+                print(f"❌ Failed to read local cicd/cicd.json: {e}", file=sys.stderr)
+            return 1
+        
+        # Resolve commit information from local git
+        try:
+            commit_info = self._get_local_commit_info(repo_path)
+        except Exception as e:
+            if not self.short_output:
+                print(f"❌ Failed to resolve local git metadata: {e}", file=sys.stderr)
+            return 1
+        
+        # Determine image name
+        image_override = self.helper_args.get('image_name') or self.custom_image
+        if image_override:
+            image_name = self._parse_custom_image(image_override, commit_info)
+        else:
+            image_from_config = build_config.get('IMAGE', self.repo)
+            namespace = self.config.get('docker.namespace', 'loyaltolpi')
+            tag_version = self._get_tag_version(commit_info)
+            image_name = f"{namespace}/{image_from_config}:{tag_version}"
+        
+        metadata = {
+            'image_name': image_name,
+            'commit_hash': commit_info['full_hash'],
+            'short_hash': commit_info['short_hash'],
+            'ref_type': commit_info['ref_type']
+        }
+        
+        # Skip build if image already exists and rebuild not requested
+        if not self.rebuild:
+            check_result = check_docker_image_exists(metadata['image_name'], auth_data, verbose=False)
+            if check_result['exists']:
+                if not self.short_output:
+                    print(f"✅ Image already ready: {metadata['image_name']}. Skipping build.")
+                if self.short_output:
+                    print(metadata['image_name'])
+                self.result['success'] = True
+                self.result['image'] = metadata['image_name']
+                self.result['message'] = 'Image already exists'
+                
+                # Send notification
+                self._send_notification(auth_data, metadata['image_name'], "skipped")
+                
+                if self.json_output:
+                    print(json.dumps(self.result))
+                return 0
+        
+        # Build Docker image from current working directory
+        if not self._build_docker_image(metadata, build_config, build_context=str(repo_path)):
+            return 1
+        
+        # Send notification
+        self._send_notification(auth_data, metadata['image_name'], "success")
+        
+        # Output result
+        self._output_build_result(metadata)
+        
+        return 0
+    
+    def _get_local_commit_info(self, repo_path: Path) -> Dict[str, Any]:
+        """Resolve commit information for local repository."""
+        def _run_git(*args: str) -> str:
+            result = subprocess.run(
+                ['git', *args],
+                cwd=repo_path,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                message = result.stderr.strip() or result.stdout.strip() or "Unknown git error"
+                raise RuntimeError(message)
+            return result.stdout.strip()
+        
+        if not self.refs:
+            raise ValueError("Reference (branch/tag) is required in local mode")
+        
+        full_hash = _run_git('rev-parse', self.refs)
+        short_hash = _run_git('rev-parse', '--short', full_hash)
+        
+        # Determine ref type
+        ref_type = 'branch'
+        tag_check = subprocess.run(
+            ['git', 'rev-parse', '--verify', f'refs/tags/{self.refs}'],
+            cwd=repo_path,
+            capture_output=True,
+            text=True
+        )
+        if tag_check.returncode == 0:
+            ref_type = 'tag'
+        else:
+            head_check = subprocess.run(
+                ['git', 'rev-parse', '--verify', f'refs/heads/{self.refs}'],
+                cwd=repo_path,
+                capture_output=True,
+                text=True
+            )
+            if head_check.returncode != 0 and self.refs == full_hash:
+                ref_type = 'commit'
+        
+        return {
+            'full_hash': full_hash,
+            'short_hash': short_hash,
+            'ref_type': ref_type
+        }
+    
+    def _load_local_build_config(self, repo_path: Path) -> Dict[str, Any]:
+        """Load cicd configuration from the local working tree."""
+        cicd_path = repo_path / 'cicd' / 'cicd.json'
+        if not cicd_path.exists():
+            raise FileNotFoundError(f"{cicd_path} not found")
+        
+        try:
+            with open(cicd_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in {cicd_path}: {e}") from e
     
     def _fetch_build_metadata_local(self, auth_data: Dict[str, str]) -> Optional[Dict[str, Any]]:
         """Fetch build metadata using local Bitbucket API calls."""
@@ -574,11 +720,16 @@ class DevOpsCIBuilder:
                 print(f"❌ Clone failed: {e}", file=sys.stderr)
             return False
     
-    def _build_docker_image(self, metadata: Dict[str, Any], build_config: Dict[str, Any]) -> bool:
+    def _build_docker_image(self, metadata: Dict[str, Any], build_config: Dict[str, Any],
+                            build_context: Optional[str] = None) -> bool:
         """Build Docker image using buildx."""
         if not self.short_output:
             print(f"\n🔨 Building Docker image...")
             print(f"   Image: {metadata['image_name']}")
+        
+        context_dir = build_context or self.build_dir
+        if not context_dir:
+            raise RuntimeError("Build context is not defined")
         
         try:
             # Build command
@@ -608,6 +759,11 @@ class DevOpsCIBuilder:
                 '--push'
             ])
             build_cmd += buildx_args
+            build_cmd.extend([
+                '--attest', 'type=provenance,mode=max'
+            ])
+            if self.no_cache:
+                build_cmd.append('--no-cache')
             
             # Add build args from cicd.json
             if build_config:
@@ -624,9 +780,9 @@ class DevOpsCIBuilder:
             
             # Run build
             if self.short_output or self.json_output:
-                result = subprocess.run(build_cmd, cwd=self.build_dir, capture_output=True, text=True)
+                result = subprocess.run(build_cmd, cwd=context_dir, capture_output=True, text=True)
             else:
-                result = subprocess.run(build_cmd, cwd=self.build_dir)
+                result = subprocess.run(build_cmd, cwd=context_dir)
             
             if result.returncode != 0:
                 error_msg = result.stderr if hasattr(result, 'stderr') else "Build failed"
@@ -738,23 +894,30 @@ def _detect_helper_mode(args) -> tuple[bool, Dict[str, str]]:
     Returns:
         Tuple of (helper_mode bool, helper_args dict)
     """
-    helper_args = {}
+    helper_args: Dict[str, str] = {}
     auto_helper_mode = False
+    local_mode = getattr(args, 'local', False)
     
     if hasattr(args, 'image_name') and args.image_name:
         helper_args['image_name'] = args.image_name
-        auto_helper_mode = True
+        if not local_mode:
+            auto_helper_mode = True
     
     if hasattr(args, 'registry') and args.registry:
         helper_args['registry'] = args.registry
-        auto_helper_mode = True
+        if not local_mode:
+            auto_helper_mode = True
     
     if hasattr(args, 'port') and args.port:
         helper_args['port'] = args.port
-        auto_helper_mode = True
+        if not local_mode:
+            auto_helper_mode = True
     
-    # Use explicit --helper flag if provided, otherwise use auto-detected mode
-    helper_mode = getattr(args, 'helper', False) or auto_helper_mode
+    if local_mode:
+        helper_mode = False
+    else:
+        # Use explicit --helper flag if provided, otherwise use auto-detected mode
+        helper_mode = getattr(args, 'helper', False) or auto_helper_mode
     
     return helper_mode, helper_args
 
@@ -790,7 +953,9 @@ def cmd_devops_ci(args):
         helper_mode=helper_mode,
         helper_args=helper_args,
         builder_name=getattr(args, 'use_builder', None),
-        webhook_url=getattr(args, 'webhook', None)
+        webhook_url=getattr(args, 'webhook', None),
+        no_cache=args.no_cache,
+        local_mode=getattr(args, 'local', False)
     )
     
     # Run build
@@ -817,6 +982,8 @@ def register_commands(subparsers):
                                    help='(Optional) Custom image name/tag to override default')
     devops_ci_parser.add_argument('--rebuild', action='store_true',
                                    help='Force rebuild even if image already exists')
+    devops_ci_parser.add_argument('--no-cache', action='store_true',
+                                   help='Disable Docker layer caching during build')
     devops_ci_parser.add_argument('--json', action='store_true',
                                    help='Show build progress + JSON result at end')
     devops_ci_parser.add_argument('--short', action='store_true',
@@ -833,6 +1000,8 @@ def register_commands(subparsers):
                                    help='Specify docker buildx builder name to use for the build')
     devops_ci_parser.add_argument('--webhook', type=str,
                                   help='Microsoft Teams webhook URL for build notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
+    devops_ci_parser.add_argument('--local', action='store_true',
+                                  help='Build from current working directory without cloning repository')
     devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
                                    help='Show detailed DevOps CI help')
     devops_ci_parser.add_argument('--version-devops-ci', action='store_true',
