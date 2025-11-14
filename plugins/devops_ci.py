@@ -720,6 +720,61 @@ class DevOpsCIBuilder:
                 print(f"❌ Clone failed: {e}", file=sys.stderr)
             return False
     
+    def _setup_builder(self, builder_name: str) -> bool:
+        """Setup Docker buildx builder with docker-container driver.
+        
+        Args:
+            builder_name: Name of the builder to create/setup
+            
+        Returns:
+            bool: True if setup successful
+        """
+        try:
+            # Check if builder exists
+            inspect = subprocess.run(
+                ['docker', 'buildx', 'inspect', builder_name],
+                capture_output=True,
+                text=True
+            )
+            
+            if inspect.returncode == 0:
+                # Builder exists, check if it's using docker-container driver
+                if 'docker-container' in inspect.stdout:
+                    if not self.short_output:
+                        print(f"✅ Builder '{builder_name}' already exists with docker-container driver")
+                    return True
+                else:
+                    # Builder exists but using different driver - still usable
+                    if not self.short_output:
+                        print(f"✅ Builder '{builder_name}' already exists")
+                    return True
+            
+            # Builder doesn't exist, create it
+            if not self.short_output:
+                print(f"🔨 Creating Docker buildx builder '{builder_name}'...")
+            
+            create_cmd = [
+                'docker', 'buildx', 'create',
+                '--name', builder_name,
+                '--driver', 'docker-container',
+                '--use'
+            ]
+            
+            result = subprocess.run(create_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create builder: {result.stderr}")
+            
+            if not self.short_output:
+                print(f"✅ Builder '{builder_name}' created successfully")
+            
+            return True
+        
+        except Exception as e:
+            if not self.short_output:
+                print(f"❌ Failed to setup builder: {e}", file=sys.stderr)
+            return False
+    
     def _build_docker_image(self, metadata: Dict[str, Any], build_config: Dict[str, Any],
                             build_context: Optional[str] = None) -> bool:
         """Build Docker image using buildx."""
@@ -739,21 +794,20 @@ class DevOpsCIBuilder:
                 'docker', 'buildx', 'build',
             ]
             if self.builder_name:
-                # Validate builder availability
-                inspect = subprocess.run(
-                    ['docker', 'buildx', 'inspect', self.builder_name],
-                    capture_output=True,
-                    text=True
-                )
-                if inspect.returncode != 0:
-                    raise RuntimeError(
-                        f"Buildx builder '{self.builder_name}' tidak ditemukan. "
-                        "Buat terlebih dahulu dengan 'docker buildx create --name "
-                        f"{self.builder_name} --use' lalu bootstrap."
-                    )
+                # Setup builder if needed
+                if not self._setup_builder(self.builder_name):
+                    raise RuntimeError(f"Failed to setup builder '{self.builder_name}'")
                 if not self.short_output:
                     print(f"   Builder: {self.builder_name}")
                 build_cmd.extend(['--builder', self.builder_name])
+            else:
+                # Use default builder or create container-builder
+                default_builder = 'container-builder'
+                if not self._setup_builder(default_builder):
+                    raise RuntimeError(f"Failed to setup default builder '{default_builder}'")
+                if not self.short_output:
+                    print(f"   Builder: {default_builder}")
+                build_cmd.extend(['--builder', default_builder])
             build_cmd.extend([
                 '-t', metadata['image_name'],
                 '--push'
