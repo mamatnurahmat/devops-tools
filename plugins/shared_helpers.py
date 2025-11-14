@@ -172,12 +172,18 @@ def _persist_auth_file(auth_file_path: Path, auth_data: Dict[str, str], source: 
 
 
 def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
-    """Centralized auth loading with migration support and environment variable fallback.
+    """Centralized auth loading with comprehensive fallback chain.
     
-    Priority:
-    1. Load from specified auth_file_path or ~/.doq/auth.json
-    2. If file not found, try to load from environment variables
-    3. If credentials found in env, auto-create ~/.doq/auth.json for future use
+    Priority (highest to lowest):
+    1. ~/.doq/auth.json (primary - always takes precedence)
+    2. Environment variables (DOCKERHUB_USER, GIT_USER, etc.)
+    3. ~/.docker/config.json (Docker Hub credentials only)
+    4. ~/.netrc (Bitbucket/Git credentials only)
+    
+    Conflict Resolution:
+    - If ~/.doq/auth.json exists and has values, those values always win
+    - Missing fields in ~/.doq/auth.json are filled from fallbacks in order
+    - This ensures ~/.doq/auth.json acts as override file
     
     Args:
         auth_file_path: Optional path to auth.json file
@@ -192,10 +198,44 @@ def load_auth_file(auth_file_path: Optional[Path] = None) -> Dict[str, str]:
     if auth_file_path is None:
         auth_file_path = Path.home() / ".doq" / "auth.json"
     
-    # Try to load from file first
+    # Start with empty auth dict
+    merged_auth = {}
+    
+    # 1. Try to load from file first (highest priority)
     auth_data = _load_auth_from_file(auth_file_path)
     if auth_data is not None:
-        return auth_data
+        merged_auth.update(auth_data)
+        # Don't return yet - we'll fill missing fields from fallbacks
+    
+    # 2. Fill missing fields from environment variables
+    env_auth = _load_auth_from_env()
+    for key, value in env_auth.items():
+        if key not in merged_auth or not merged_auth[key]:
+            merged_auth[key] = value
+    
+    # 3. Fill missing Docker credentials from ~/.docker/config.json (if not in auth file or env)
+    docker_auth = _load_auth_from_docker()
+    for key, value in docker_auth.items():
+        if key not in merged_auth or not merged_auth[key]:
+            merged_auth[key] = value
+    
+    # 4. Fill missing Git credentials from ~/.netrc (if not in auth file, env, or docker)
+    netrc_auth = _load_auth_from_netrc()
+    for key, value in netrc_auth.items():
+        if key not in merged_auth or not merged_auth[key]:
+            merged_auth[key] = value
+    
+    # Verify we have minimum required credentials
+    required_keys = ['GIT_USER', 'GIT_PASSWORD', 'DOCKERHUB_USER', 'DOCKERHUB_PASSWORD']
+    missing = [k for k in required_keys if not merged_auth.get(k)]
+    
+    if missing:
+        raise FileNotFoundError(
+            f"Missing authentication credentials: {', '.join(missing)}. "
+            f"Please configure ~/.doq/auth.json with all required fields."
+        )
+    
+    return merged_auth
 
 
 def resolve_teams_webhook(explicit_url: Optional[str] = None) -> Optional[str]:
