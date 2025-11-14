@@ -2,10 +2,13 @@
 """DevOps Q - Simple CLI tool for managing Rancher resources."""
 import argparse
 import getpass
+import os
 import sys
 import json
 import subprocess
 from pathlib import Path
+from typing import Any, Dict
+from urllib.parse import quote
 from rancher_api import RancherAPI, login, check_token
 from config import load_config, save_config, get_config_file_path, config_exists, ensure_config_dir
 from version import get_version, save_version, check_for_updates, get_latest_commit_hash
@@ -13,11 +16,253 @@ from plugin_manager import PluginManager
 from plugins.shared_helpers import (
     load_netrc_credentials,
     load_auth_file,
+    _load_auth_from_docker,
+    _load_auth_from_netrc,
+    _load_auth_from_env,
     BITBUCKET_API_BASE,
     BITBUCKET_ORG,
     resolve_teams_webhook,
-    send_teams_notification
+    send_teams_notification,
+    validate_auth_file
 )
+
+def _is_remote_auth_enabled() -> bool:
+    """Return True if RANCHER_AUTH flag is set in env or ~/.doq/.env."""
+    value = os.getenv("RANCHER_AUTH")
+    if value is None:
+        env_file = Path.home() / ".doq" / ".env"
+        if env_file.exists():
+            try:
+                from dotenv import load_dotenv  # type: ignore
+            except ImportError:
+                pass
+            else:
+                try:
+                    load_dotenv(env_file, override=False)
+                    value = os.getenv("RANCHER_AUTH")
+                except Exception:
+                    pass
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bootstrap_auth_credentials(url: str, token: str, insecure: bool, username: str, force: bool = False) -> None:
+    """Ensure ~/.doq/auth.json exists by fetching from auth-api when empty, with user confirmation (unless force=True)."""
+    auth_path = Path.home() / ".doq" / "auth.json"
+
+    # When force=True, always attempt to fetch from auth-api (for --update-auth or --force)
+    if not force:
+        requires_bootstrap = False
+        bootstrap_reason = ""
+
+        try:
+            validation = validate_auth_file()
+            if not validation.get("valid", False):
+                requires_bootstrap = True
+                bootstrap_reason = validation.get("message", "missing required credentials")
+        except Exception as exc:
+            requires_bootstrap = True
+            bootstrap_reason = str(exc)
+
+        if not requires_bootstrap:
+            return
+
+        if auth_path.exists() and auth_path.stat().st_size == 0:
+            bootstrap_reason = "auth.json exists but is empty"
+        elif not auth_path.exists():
+            bootstrap_reason = bootstrap_reason or "auth.json not found"
+
+        print(f"ℹ️  {bootstrap_reason}.", file=sys.stderr)
+    else:
+        print(f"🔄 Force updating auth.json from auth-api...", file=sys.stderr)
+
+    remote_auth_mode = _is_remote_auth_enabled()
+    if remote_auth_mode:
+        print("🔒 RANCHER_AUTH enabled: using remote auth-api credentials (local fallbacks disabled).", file=sys.stderr)
+
+    # Try to fetch from auth-api
+    auth_data = None
+    fetched_from_api = False
+
+    print(f"🔍 Attempting to fetch credentials from auth-api...", file=sys.stderr)
+
+    base_url = url.rstrip("/")
+    encoded_username = quote(username)
+    auth_api_url = (
+        f"{base_url}/api/v1/namespaces/default/services/http:auth-api:8080/proxy/v1/auth/{encoded_username}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.get(
+            auth_api_url,
+            headers=headers,
+            timeout=20,
+            verify=not insecure,
+        )
+        response.raise_for_status()
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            print(f"⚠️  Warning: auth-api returned invalid JSON: {exc}", file=sys.stderr)
+        else:
+            if isinstance(payload, dict):
+                raw_value = payload.get("value")
+                if raw_value:
+                    try:
+                        auth_data = json.loads(raw_value)
+                        if isinstance(auth_data, dict):
+                            fetched_from_api = True
+                            print(f"✅ Successfully fetched credentials from auth-api", file=sys.stderr)
+                        else:
+                            print("⚠️  Warning: auth-api credentials payload is not a JSON object", file=sys.stderr)
+                    except json.JSONDecodeError as exc:
+                        print(f"⚠️  Warning: Failed to parse auth-api credentials payload: {exc}", file=sys.stderr)
+                else:
+                    print("⚠️  Warning: auth-api response missing 'value' field", file=sys.stderr)
+            else:
+                print("⚠️  Warning: auth-api response is not a JSON object", file=sys.stderr)
+    except requests.RequestException as exc:
+        print(f"⚠️  Warning: Failed to fetch credentials from auth-api: {exc}", file=sys.stderr)
+
+    # If API failed, try fallback sources
+    if not fetched_from_api:
+        if remote_auth_mode:
+            print("❌ Unable to retrieve credentials from auth-api while RANCHER_AUTH remote mode is enabled.", file=sys.stderr)
+            print("   Please ensure the remote credential service is available, or unset RANCHER_AUTH to use local sources.", file=sys.stderr)
+            return
+
+        print(f"🔄 Falling back to local credential sources...", file=sys.stderr)
+
+        # Try ~/.docker/config.json
+        docker_auth = _load_auth_from_docker()
+        if docker_auth:
+            print(f"✅ Found Docker Hub credentials in ~/.docker/config.json", file=sys.stderr)
+            auth_data = auth_data or {}
+            auth_data.update(docker_auth)
+
+        # Try ~/.netrc
+        netrc_auth = _load_auth_from_netrc()
+        if netrc_auth:
+            print(f"✅ Found Bitbucket credentials in ~/.netrc", file=sys.stderr)
+            auth_data = auth_data or {}
+            auth_data.update(netrc_auth)
+
+        # Try environment variables
+        env_auth = _load_auth_from_env()
+        if env_auth:
+            print(f"✅ Found credentials in environment variables", file=sys.stderr)
+            auth_data = auth_data or {}
+            auth_data.update(env_auth)
+
+    if not auth_data:
+        print(f"❌ No credentials found in auth-api, ~/.docker/config.json, ~/.netrc, or environment variables.", file=sys.stderr)
+        print(f"   Please ensure Docker Hub and Bitbucket credentials are available.", file=sys.stderr)
+        return
+
+    # Show what we found
+    found_sources = []
+    if 'DOCKERHUB_USER' in auth_data or 'DOCKERHUB_PASSWORD' in auth_data:
+        found_sources.append("Docker Hub")
+    if 'GIT_USER' in auth_data or 'GIT_PASSWORD' in auth_data:
+        found_sources.append("Bitbucket")
+
+    if found_sources:
+        print(f"📋 Found credentials for: {', '.join(found_sources)}", file=sys.stderr)
+
+    # Ask user for confirmation before saving (unless force=True)
+    if not force:
+        try:
+            while True:
+                response = input("Save credentials to ~/.doq/auth.json? (y/N): ").strip().lower()
+                if response in ('y', 'yes'):
+                    break
+                elif response in ('n', 'no', ''):
+                    print(f"ℹ️  Credentials not saved. You can manually create ~/.doq/auth.json or use environment variables.", file=sys.stderr)
+                    return
+                else:
+                    print("Please answer 'y' or 'n'", file=sys.stderr)
+        except (EOFError, KeyboardInterrupt):
+            print(f"\nℹ️  Credentials not saved due to interrupted input.", file=sys.stderr)
+            return
+
+    # Save the credentials
+    try:
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(auth_path, "w") as file_handle:
+            json.dump(auth_data, file_handle, indent=2)
+        auth_path.chmod(0o600)
+        print(f"✅ Credentials saved to {auth_path}", file=sys.stderr)
+    except Exception as exc:
+        print(f"❌ Failed to save credentials: {exc}", file=sys.stderr)
+
+
+def _validate_dockerhub_credentials(username: str, password: str) -> Dict[str, Any]:
+    """Verify Docker Hub credentials by attempting a login."""
+    result: Dict[str, Any] = {"valid": False, "message": ""}
+
+    if not username or not password:
+        result["message"] = "Docker Hub credentials missing (DOCKERHUB_USER / DOCKERHUB_PASSWORD)."
+        return result
+
+    try:
+        response = requests.post(
+            "https://hub.docker.com/v2/users/login/",
+            json={"username": username, "password": password},
+            headers={"User-Agent": "doq-cli/1.0"},
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        result["message"] = f"Docker Hub login request failed: {exc}"
+        return result
+
+    if response.status_code == 200:
+        result["valid"] = True
+        result["message"] = "Docker Hub credentials are valid."
+    elif response.status_code in (401, 403):
+        result["message"] = "Docker Hub credentials rejected (401/403)."
+    else:
+        result["message"] = f"Docker Hub login failed (HTTP {response.status_code})."
+
+    return result
+
+
+def _validate_bitbucket_credentials(username: str, password: str) -> Dict[str, Any]:
+    """Verify Bitbucket credentials by querying the repositories endpoint."""
+    result: Dict[str, Any] = {"valid": False, "message": ""}
+
+    if not username or not password:
+        result["message"] = "Bitbucket credentials missing (GIT_USER / GIT_PASSWORD)."
+        return result
+
+    try:
+        # Use repository listing endpoint which works with repository admin permissions
+        response = requests.get(
+            "https://api.bitbucket.org/2.0/repositories/loyaltoid",
+            auth=(username, password),
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        result["message"] = f"Bitbucket authentication request failed: {exc}"
+        return result
+
+    if response.status_code == 200:
+        result["valid"] = True
+        result["message"] = "Bitbucket credentials are valid."
+    elif response.status_code in (401, 403):
+        result["message"] = "Bitbucket credentials rejected (401/403)."
+    else:
+        result["message"] = f"Bitbucket authentication failed (HTTP {response.status_code})."
+
+    return result
+
+
 from plugins.set_image_yaml import update_image_in_repo, ImageUpdateError
 import requests
 # Plugins are now loaded dynamically via PluginManager
@@ -144,18 +389,47 @@ def cmd_login(args):
     default_url = "https://193.1.1.4"
     default_insecure = True
     
-    # Check if config exists and token is valid
+    # Handle --update-auth: use existing config and just update auth.json
+    if args.update_auth and config_exists():
+        config = load_config()
+        url = config.get('url')
+        token = config.get('token')
+        insecure = config.get('insecure', True)
+        username = args.username or config.get('username')
+
+        if not username:
+            username = input("Username: ")
+
+        if url and token and username:
+            print(f"🔄 Updating auth.json using existing Rancher configuration...")
+            print(f"  URL: {url}")
+            print(f"  Username: {username}")
+            print(f"  Insecure mode: {insecure}")
+            print()
+
+            # Save the username to config if it wasn't already stored
+            if not config.get('username'):
+                save_config(url, token, insecure, username)
+
+            _bootstrap_auth_credentials(url, token, insecure, username, force=True)
+            return
+        else:
+            print("❌ Error: Valid Rancher configuration not found.", file=sys.stderr)
+            print("   Run 'doq login' first to configure Rancher API access.", file=sys.stderr)
+            sys.exit(1)
+
+    # Check if config exists and token is valid (skip if --force)
     if config_exists() and not args.force:
         config = load_config()
         existing_url = config.get('url')
         existing_token = config.get('token')
         existing_insecure = config.get('insecure', True)
-        
+
         if existing_url and existing_token:
             # Check if token is valid and not expired
             try:
                 result = check_token(existing_url, existing_token, existing_insecure)
-                
+
                 if result['valid'] and not result['expired']:
                     print("? Existing configuration found and token is valid!")
                     print(f"  URL: {existing_url}")
@@ -184,10 +458,11 @@ def cmd_login(args):
                         except Exception:
                             if result['expires_at']:
                                 print(f"  Token expires at: {result['expires_at']}")
-                    
+
                     print(f"\n? No need to login. Using existing configuration.")
                     print(f"  Config file: {get_config_file_path()}")
                     print("\nUse 'doq login --force' to force re-login.")
+                    print("Use 'doq login --update-auth' to update auth.json.")
                     return
                 elif result['expired']:
                     print("??  Existing token found but it's EXPIRED.")
@@ -237,20 +512,95 @@ def cmd_login(args):
         ensure_config_dir()
         
         # Save configuration
-        save_config(url, token, insecure)
+        save_config(url, token, insecure, username)
         
         print(f"Login successful!")
         print(f"Configuration saved to {get_config_file_path()}")
+
+        # Force update auth.json if --update-auth is specified, otherwise use normal bootstrap logic
+        force_bootstrap = args.force or args.update_auth
+        _bootstrap_auth_credentials(url, token, insecure, username, force_bootstrap)
     except Exception as e:
         print(f"Error logging in: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_token_check(args):
-    """Check token validity and expiration."""
+def cmd_check(args):
+    """Check token validity and expiration with auth validation."""
     try:
+        # First check if config exists
+        if not config_exists():
+            print("Error: Rancher configuration not found.", file=sys.stderr)
+            print("Run 'doq login' to configure Rancher API access.", file=sys.stderr)
+            sys.exit(1)
+
+        # Check auth file validity
+        validation = validate_auth_file()
+        if not validation.get("valid", False):
+            if _is_remote_auth_enabled():
+                print("ℹ️  Auth file missing or incomplete (RANCHER_AUTH=true).", file=sys.stderr)
+                print("   Some checks may be skipped. Run 'doq login' to bootstrap credentials.", file=sys.stderr)
+                auth_data = None
+            else:
+                print("Error: ~/.doq/auth.json is missing or incomplete.", file=sys.stderr)
+                message = validation.get("message")
+                if message:
+                    print(f"  Details: {message}", file=sys.stderr)
+                missing = validation.get("missing_fields") or []
+                if missing:
+                    print(f"  Missing fields: {', '.join(missing)}", file=sys.stderr)
+                print("Run 'doq login' to bootstrap credentials automatically.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            auth_data = load_auth_file()
+        # Validate credentials if auth_data is available
+        if auth_data:
+            dockerhub_status = _validate_dockerhub_credentials(
+                auth_data.get("DOCKERHUB_USER", ""),
+                auth_data.get("DOCKERHUB_PASSWORD", ""),
+            )
+            bitbucket_status = _validate_bitbucket_credentials(
+                auth_data.get("GIT_USER", ""),
+                auth_data.get("GIT_PASSWORD", ""),
+            )
+        else:
+            # Skip credential validation if auth_data is None (RANCHER_AUTH=true but no auth file)
+            dockerhub_status = {"valid": False, "message": "Skipped (no auth data)"}
+            bitbucket_status = {"valid": False, "message": "Skipped (no auth data)"}
+
+        if args.json:
+            import json
+            output: Dict[str, Any] = {
+                "auth": {
+                    "dockerhub": dockerhub_status,
+                    "bitbucket": bitbucket_status,
+                }
+            }
+        else:
+            print("Validating Docker Hub credentials...")
+            if dockerhub_status["valid"]:
+                print("  ✅ Docker Hub credentials are valid.")
+            elif dockerhub_status["message"] == "Skipped (no auth data)":
+                print(f"  ℹ️  {dockerhub_status['message']}")
+            else:
+                print(f"  ❌ {dockerhub_status['message']}", file=sys.stderr)
+                sys.exit(1)
+
+            print("Validating Bitbucket credentials...")
+            if bitbucket_status["valid"]:
+                print("  ✅ Bitbucket credentials are valid.")
+            elif bitbucket_status["message"] == "Skipped (no auth data)":
+                print(f"  ℹ️  {bitbucket_status['message']}")
+            else:
+                print(f"  ❌ {bitbucket_status['message']}", file=sys.stderr)
+                sys.exit(1)
+
         # Get config
         config = load_config()
+        if config is None:
+            print("Error: Rancher configuration not found.", file=sys.stderr)
+            print("Use 'doq login' to configure Rancher API access.", file=sys.stderr)
+            sys.exit(1)
         url = args.url or config.get('url')
         token = args.token or config.get('token')
         insecure = args.insecure if args.insecure is not None else config.get('insecure', True)
@@ -261,9 +611,9 @@ def cmd_token_check(args):
             sys.exit(1)
         
         if args.json:
-            import json
-            result = check_token(url, token, insecure)
-            print(json.dumps(result, indent=2))
+            token_result = check_token(url, token, insecure)
+            output["token"] = token_result
+            print(json.dumps(output, indent=2))
         else:
             print(f"Checking token for: {url}")
             print(f"Insecure mode: {insecure}")
@@ -1408,22 +1758,32 @@ def cmd_commit(args):
         print("Error: Repository name and refs (branch/tag) are required", file=sys.stderr)
         print("Usage: doq commit <repo> <ref> [commit_id]", file=sys.stderr)
         sys.exit(1)
-    
+
     try:
         # Load authentication
         try:
             auth_data = load_auth_file()
+            if auth_data is None:
+                print("❌ Error: Authentication required but not available.", file=sys.stderr)
+                if _is_remote_auth_enabled():
+                    print("   Run 'doq login' to fetch credentials from auth-api.", file=sys.stderr)
+                else:
+                    print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+                sys.exit(1)
         except FileNotFoundError as e:
             print(f"❌ Error: {e}", file=sys.stderr)
-            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            if _is_remote_auth_enabled():
+                print("   Run 'doq login' to fetch credentials from auth-api.", file=sys.stderr)
+            else:
+                print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             print(f"❌ Error loading authentication: {e}", file=sys.stderr)
             sys.exit(1)
-        
+
         git_user = auth_data.get('GIT_USER', '')
         git_password = auth_data.get('GIT_PASSWORD', '')
-        
+
         if not git_user or not git_password:
             print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
             sys.exit(1)
@@ -1574,22 +1934,32 @@ def cmd_create_branch(args):
         print("Error: Repository name, source branch, and destination branch are required", file=sys.stderr)
         print("Usage: doq create-branch <repo> <src_branch> <dest_branch>", file=sys.stderr)
         sys.exit(1)
-    
+
     try:
         # Load authentication
         try:
             auth_data = load_auth_file()
+            if auth_data is None:
+                print("❌ Error: Authentication required but not available.", file=sys.stderr)
+                if _is_remote_auth_enabled():
+                    print("   Run 'doq login' to fetch credentials from auth-api.", file=sys.stderr)
+                else:
+                    print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+                sys.exit(1)
         except FileNotFoundError as e:
             print(f"❌ Error: {e}", file=sys.stderr)
-            print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+            if _is_remote_auth_enabled():
+                print("   Run 'doq login' to fetch credentials from auth-api.", file=sys.stderr)
+            else:
+                print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             print(f"❌ Error loading authentication: {e}", file=sys.stderr)
             sys.exit(1)
-        
+
         git_user = auth_data.get('GIT_USER', '')
         git_password = auth_data.get('GIT_PASSWORD', '')
-        
+
         if not git_user or not git_password:
             print("❌ Error: GIT_USER and GIT_PASSWORD required in ~/.doq/auth.json", file=sys.stderr)
             sys.exit(1)
@@ -1720,19 +2090,30 @@ def cmd_pull_request(args):
                 print("Usage: doq pull-request <repo> <src_branch> <dest_branch> [--delete]", file=sys.stderr)
                 result['message'] = 'Missing required arguments'
                 break
-            
+
             try:
                 auth_data = load_auth_file()
+                if auth_data is None:
+                    print("❌ Error: Authentication required but not available.", file=sys.stderr)
+                    if _is_remote_auth_enabled():
+                        print("   Run 'doq login' to fetch credentials from auth-api.", file=sys.stderr)
+                    else:
+                        print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+                    result['message'] = 'Authentication required but not available'
+                    break
             except FileNotFoundError as e:
                 print(f"❌ Error: {e}", file=sys.stderr)
-                print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
+                if _is_remote_auth_enabled():
+                    print("   Run 'doq login' to fetch credentials from auth-api.", file=sys.stderr)
+                else:
+                    print("   Configure authentication via ~/.doq/auth.json or environment variables", file=sys.stderr)
                 result['message'] = str(e)
                 break
             except Exception as e:
                 print(f"❌ Error loading authentication: {e}", file=sys.stderr)
                 result['message'] = str(e)
                 break
-            
+
             git_user = auth_data.get('GIT_USER', '')
             git_password = auth_data.get('GIT_PASSWORD', '')
             
@@ -2369,8 +2750,10 @@ def main():
     login_parser.add_argument('--url', help=f'Rancher API URL (default: https://193.1.1.4)')
     login_parser.add_argument('--username', '-u', help='Username (prompt if not provided)')
     login_parser.add_argument('--password', '-p', help='Password (prompt if not provided)')
-    login_parser.add_argument('--force', action='store_true', 
+    login_parser.add_argument('--force', action='store_true',
                               help='Force re-login even if valid token exists')
+    login_parser.add_argument('--update-auth', action='store_true',
+                              help='Force update ~/.doq/auth.json from auth-api (skip confirmation)')
     login_parser.add_argument('--insecure', action='store_true', default=None,
                               help='Enable insecure mode (skip SSL verification, default: True)')
     login_parser.add_argument('--secure', action='store_false', dest='insecure',
@@ -2378,15 +2761,18 @@ def main():
     login_parser.set_defaults(func=cmd_login)
     
     # Token check command
-    token_parser = subparsers.add_parser('token-check', help='Check token validity and expiration')
-    token_parser.add_argument('--url', help='Rancher API URL (uses config if not provided)')
-    token_parser.add_argument('--token', help='Token to check (uses config if not provided)')
-    token_parser.add_argument('--insecure', action='store_true', default=None,
+    check_parser = subparsers.add_parser(
+        'check',
+        help='Validate auth.json and Rancher token status'
+    )
+    check_parser.add_argument('--url', help='Rancher API URL (uses config if not provided)')
+    check_parser.add_argument('--token', help='Token to check (uses config if not provided)')
+    check_parser.add_argument('--insecure', action='store_true', default=None,
                               help='Enable insecure mode (skip SSL verification)')
-    token_parser.add_argument('--secure', action='store_false', dest='insecure',
+    check_parser.add_argument('--secure', action='store_false', dest='insecure',
                               help='Disable insecure mode (enable SSL verification)')
-    token_parser.add_argument('--json', action='store_true', help='Output as JSON')
-    token_parser.set_defaults(func=cmd_token_check)
+    check_parser.add_argument('--json', action='store_true', help='Output as JSON')
+    check_parser.set_defaults(func=cmd_check)
     
     # Check update command
     check_update_parser = subparsers.add_parser('check-update', help='Check if there are updates available')

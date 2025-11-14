@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: default
+commonLabels:
+  app.kubernetes.io/name: redis
+  app.kubernetes.io/instance: redis
+resources:
+  - redis-service.yaml
+  - redis-statefulset.yaml
+  - redis-commander-service.yaml
+  - redis-commander-deployment.yaml
+  - auth-api-configmap.yaml
+  - auth-api-deployment.yaml
+  - auth-api-service.yaml
+

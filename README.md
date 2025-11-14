@@ -234,10 +234,13 @@ doq config
 Cek validitas dan status expired token:
 
 ```bash
-doq token-check
+doq check
 ```
 
 Command ini akan:
+- Memastikan `~/.doq/auth.json` tersedia dan lengkap
+- Menguji kredensial Docker Hub (`DOCKERHUB_USER/PASSWORD`) langsung ke API Docker
+- Menguji kredensial Bitbucket (`GIT_USER/PASSWORD`) ke API Bitbucket
 - Menggunakan token dari config file
 - Mengecek apakah token valid
 - Mengecek apakah token sudah expired
@@ -246,13 +249,13 @@ Command ini akan:
 Output JSON:
 
 ```bash
-doq token-check --json
+doq check --json
 ```
 
 Check token dengan URL/token custom:
 
 ```bash
-doq token-check --url https://rancher.example.com --token <token>
+doq check --url https://rancher.example.com --token <token>
 ```
 
 ## Penggunaan
@@ -1301,7 +1304,7 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 
 ### Rancher Management
 - `doq login` - Login ke Rancher API
-- `doq token-check` - Cek validitas token
+- `doq check` - Validasi auth.json dan cek token
 - `doq project` - List projects
 - `doq kube-config <project-id>` - Get kubeconfig dari project
 

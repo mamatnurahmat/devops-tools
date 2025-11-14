@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-api
+  labels:
+    app.kubernetes.io/name: auth-api
+    app.kubernetes.io/instance: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth-api
+      app.kubernetes.io/instance: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: auth-api
+        app.kubernetes.io/instance: redis
+    spec:
+      initContainers:
+        - name: install-deps
+          image: python:3.11-slim
+          command:
+            - sh
+            - -c
+            - |
+              pip install --target=/deps redis
+              cp -r /deps/* /opt/python-deps/
+          volumeMounts:
+            - name: python-deps
+              mountPath: /opt/python-deps
+      containers:
+        - name: auth-api
+          image: python:3.11-slim
+          command:
+            - python
+            - /app/auth_api.py
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: REDIS_HOST
+              value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PYTHONPATH
+              value: "/opt/python-deps"
+          volumeMounts:
+            - name: auth-api-config
+              mountPath: /app
+              readOnly: true
+            - name: python-deps
+              mountPath: /opt/python-deps
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: auth-api-config
+          configMap:
+            name: auth-api
+            defaultMode: 0755
+        - name: python-deps
+          emptyDir: {}

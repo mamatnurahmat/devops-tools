@@ -106,9 +106,9 @@ class RancherAPI:
         """
         if url is None or token is None:
             config = load_config()
-            url = url or config['url']
-            token = token or config['token']
-            insecure = insecure if url is not None else config['insecure']
+            url = url or config.get('url')
+            token = token or config.get('token')
+            insecure = insecure if url is not None else config.get('insecure', True)
         
         if not url or not token:
             raise ValueError("Rancher URL and token must be provided or configured")
