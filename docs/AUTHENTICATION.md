@@ -63,6 +63,8 @@ If the request fails (network error, 404, invalid payload), the CLI prints a war
 
 **To update existing credentials**: Use `doq login --update-auth` to refresh `~/.doq/auth.json` with the latest credentials from auth-api without re-login.
 
+**To save credentials to auth-api**: Use `doq login --save-auth` to upload current `~/.doq/auth.json` credentials to auth-api for sharing with other users or backup.
+
 5. Inspect the generated file:
 
    ```bash
@@ -191,6 +193,16 @@ Updates `~/.doq/auth.json` with the latest credentials from auth-api using the e
 ```bash
 doq login --update-auth  # Refresh credentials without re-login
 ```
+
+### --save-auth
+Saves current `~/.doq/auth.json` credentials to auth-api for the current user. If the user already has credentials stored, they will be updated.
+
+```bash
+doq login --save-auth  # Save current credentials to auth-api
+doq login --save-auth --username otheruser  # Save for specific user
+```
+
+**Note:** Username is automatically detected from the current Rancher token if not provided.
 
 ### --username / --password
 Provide credentials directly (useful for automated scripts):

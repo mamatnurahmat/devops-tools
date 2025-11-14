@@ -383,6 +383,87 @@ def cmd_list_projects(args):
         sys.exit(1)
 
 
+def save_auth_to_api(url: str, token: str, insecure: bool, username: str) -> None:
+    """Save current auth.json credentials to auth-api for the specified username."""
+    auth_path = Path.home() / ".doq" / "auth.json"
+
+    # Check if auth.json exists
+    if not auth_path.exists():
+        print("❌ Error: ~/.doq/auth.json does not exist. Run 'doq login' first.", file=sys.stderr)
+        return
+
+    # Load current auth data
+    try:
+        with open(auth_path, 'r') as f:
+            auth_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"❌ Error reading auth.json: {e}", file=sys.stderr)
+        return
+
+    if not auth_data:
+        print("❌ Error: auth.json is empty. No credentials to save.", file=sys.stderr)
+        return
+
+    # Convert auth data to JSON string for storage
+    try:
+        auth_json = json.dumps(auth_data, separators=(',', ':'))
+    except Exception as e:
+        print(f"❌ Error serializing auth data: {e}", file=sys.stderr)
+        return
+
+    # URL encode username
+    encoded_username = requests.utils.quote(username)
+
+    # Construct auth-api URL
+    base_url = url.rstrip('/')
+    auth_api_url = (
+        f"{base_url}/api/v1/namespaces/default/services/http:auth-api:8080/proxy/v1/auth/{encoded_username}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "value": auth_json
+    }
+
+    try:
+        print(f"🔄 Saving credentials to auth-api for user '{username}'...", file=sys.stderr)
+        response = requests.put(
+            auth_api_url,
+            headers=headers,
+            json=payload,
+            timeout=20,
+            verify=not insecure,
+        )
+        response.raise_for_status()
+
+        try:
+            result = response.json()
+            if result.get('status') == 'stored':
+                print(f"✅ Successfully saved credentials to auth-api for user '{username}'", file=sys.stderr)
+            else:
+                print(f"⚠️  Warning: Unexpected response from auth-api: {result}", file=sys.stderr)
+        except ValueError:
+            print(f"✅ Credentials saved to auth-api for user '{username}' (response not JSON)", file=sys.stderr)
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            print(f"❌ Error: auth-api service not found. Make sure auth-api is deployed.", file=sys.stderr)
+        else:
+            print(f"❌ Error saving to auth-api: {e.response.status_code} {e.response.reason}", file=sys.stderr)
+            try:
+                error_data = e.response.json()
+                if 'error' in error_data:
+                    print(f"   Details: {error_data['error']}", file=sys.stderr)
+            except:
+                pass
+    except Exception as e:
+        print(f"❌ Error saving credentials to auth-api: {e}", file=sys.stderr)
+
+
 def cmd_login(args):
     """Login to Rancher API."""
     # Default values
@@ -398,7 +479,20 @@ def cmd_login(args):
         username = args.username or config.get('username')
 
         if not username:
-            username = input("Username: ")
+            # Try to get username from current token
+            try:
+                print("🔍 Detecting username from current Rancher token...", file=sys.stderr)
+                token_info = check_token(url, token, insecure)
+                if token_info.get('username'):
+                    username = token_info['username']
+                    print(f"✅ Detected username: {username}", file=sys.stderr)
+                else:
+                    print("⚠️  Could not detect username from token, falling back to manual input.", file=sys.stderr)
+                    username = input("Username: ")
+            except Exception as e:
+                print(f"⚠️  Error detecting username from token: {e}", file=sys.stderr)
+                print("   Falling back to manual input.", file=sys.stderr)
+                username = input("Username: ")
 
         if url and token and username:
             print(f"🔄 Updating auth.json using existing Rancher configuration...")
@@ -412,6 +506,48 @@ def cmd_login(args):
                 save_config(url, token, insecure, username)
 
             _bootstrap_auth_credentials(url, token, insecure, username, force=True)
+            return
+        else:
+            print("❌ Error: Valid Rancher configuration not found.", file=sys.stderr)
+            print("   Run 'doq login' first to configure Rancher API access.", file=sys.stderr)
+            sys.exit(1)
+
+    # Handle --save-auth: save current auth.json to auth-api
+    if args.save_auth and config_exists():
+        config = load_config()
+        url = config.get('url')
+        token = config.get('token')
+        insecure = config.get('insecure', True)
+        username = args.username or config.get('username')
+
+        if not username:
+            # Try to get username from current token
+            try:
+                print("🔍 Detecting username from current Rancher token...", file=sys.stderr)
+                token_info = check_token(url, token, insecure)
+                if token_info.get('username'):
+                    username = token_info['username']
+                    print(f"✅ Detected username: {username}", file=sys.stderr)
+                else:
+                    print("⚠️  Could not detect username from token, falling back to manual input.", file=sys.stderr)
+                    username = input("Username: ")
+            except Exception as e:
+                print(f"⚠️  Error detecting username from token: {e}", file=sys.stderr)
+                print("   Falling back to manual input.", file=sys.stderr)
+                username = input("Username: ")
+
+        if url and token and username:
+            print(f"🔄 Saving auth.json to auth-api...")
+            print(f"  URL: {url}")
+            print(f"  Username: {username}")
+            print(f"  Insecure mode: {insecure}")
+            print()
+
+            # Save the username to config if it wasn't already stored
+            if not config.get('username'):
+                save_config(url, token, insecure, username)
+
+            save_auth_to_api(url, token, insecure, username)
             return
         else:
             print("❌ Error: Valid Rancher configuration not found.", file=sys.stderr)
@@ -2754,6 +2890,8 @@ def main():
                               help='Force re-login even if valid token exists')
     login_parser.add_argument('--update-auth', action='store_true',
                               help='Force update ~/.doq/auth.json from auth-api (skip confirmation)')
+    login_parser.add_argument('--save-auth', action='store_true',
+                              help='Save current auth.json credentials to auth-api for the current user')
     login_parser.add_argument('--insecure', action='store_true', default=None,
                               help='Enable insecure mode (skip SSL verification, default: True)')
     login_parser.add_argument('--secure', action='store_false', dest='insecure',
