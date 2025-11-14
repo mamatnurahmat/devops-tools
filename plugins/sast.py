@@ -301,7 +301,7 @@ def display_report(report_data: Dict[str, Any]) -> None:
 
 
 def export_report(report_data: Dict[str, Any], format: str, output_file: Optional[str] = None, 
-                  repo: str = '', refs: str = '') -> bool:
+                  repo: str = '', refs: str = '') -> Optional[str]:
     """Export Semgrep scan report to file.
     
     Args:
@@ -312,11 +312,11 @@ def export_report(report_data: Dict[str, Any], format: str, output_file: Optiona
         refs: Reference name for default filename
         
     Returns:
-        True if export successful, False otherwise
+        Path to exported file if successful, None otherwise
     """
     if not report_data:
         print("⚠️  No scan data to export", file=sys.stderr)
-        return False
+        return None
     
     # Generate default filename if not provided
     if not output_file:
@@ -341,7 +341,7 @@ def export_report(report_data: Dict[str, Any], format: str, output_file: Optiona
             with open(output_file, 'w') as f:
                 json.dump(report_data, f, indent=2)
             print(f"✅ Report exported to: {output_file}")
-            return True
+            return output_file
             
         elif format == 'html':
             # Generate HTML report
@@ -349,7 +349,7 @@ def export_report(report_data: Dict[str, Any], format: str, output_file: Optiona
             with open(output_file, 'w') as f:
                 f.write(html_content)
             print(f"✅ Report exported to: {output_file}")
-            return True
+            return output_file
             
         elif format == 'sarif':
             # Convert to SARIF format
@@ -357,15 +357,15 @@ def export_report(report_data: Dict[str, Any], format: str, output_file: Optiona
             with open(output_file, 'w') as f:
                 json.dump(sarif_data, f, indent=2)
             print(f"✅ Report exported to: {output_file}")
-            return True
+            return output_file
             
         else:
             print(f"❌ Unsupported export format: {format}", file=sys.stderr)
-            return False
+            return None
             
     except Exception as e:
         print(f"❌ Error exporting report: {e}", file=sys.stderr)
-        return False
+        return None
 
 
 def generate_html_report(report_data: Dict[str, Any]) -> str:
@@ -630,13 +630,46 @@ def convert_to_sarif(report_data: Dict[str, Any]) -> Dict[str, Any]:
     return sarif
 
 
-def send_teams_report(report_data: Dict[str, Any], repo: str, refs: str) -> None:
-    """Send SAST scan report to Microsoft Teams via webhook.
+def format_finding_for_teams(result: Dict[str, Any]) -> str:
+    """Format a single finding for Teams notification.
+    
+    Args:
+        result: Semgrep finding result
+        
+    Returns:
+        Formatted string for Teams
+    """
+    file_path = result.get('path', 'unknown')
+    start_line = result.get('start', {}).get('line', 0)
+    end_line = result.get('end', {}).get('line', 0)
+    rule_id = result.get('check_id', 'unknown')
+    message = result.get('message', 'No message')
+    
+    # Truncate long messages
+    if len(message) > 200:
+        message = message[:200] + "..."
+    
+    # Format: File: path (Line X-Y) | Rule: rule_id
+    # Message: description
+    formatted = f"**{file_path}** (Line {start_line}"
+    if end_line != start_line:
+        formatted += f"-{end_line}"
+    formatted += f")\n"
+    formatted += f"`{rule_id}`\n"
+    formatted += f"{message}"
+    
+    return formatted
+
+
+def send_teams_report(report_data: Dict[str, Any], repo: str, refs: str, 
+                     exported_file: Optional[str] = None) -> None:
+    """Send SAST scan report to Microsoft Teams via webhook with detailed findings.
     
     Args:
         report_data: Semgrep JSON output data
         repo: Repository name
         refs: Branch or tag name
+        exported_file: Path to exported report file (optional, ignored for rich notification)
     """
     # Resolve webhook URL from env or config
     webhook_url = resolve_teams_webhook()
@@ -650,19 +683,26 @@ def send_teams_report(report_data: Dict[str, Any], repo: str, refs: str) -> None
     results = report_data.get('results', [])
     errors = report_data.get('errors', [])
     
-    # Count findings by severity
-    severity_counts = {
-        'ERROR': 0,
-        'WARNING': 0,
-        'INFO': 0
+    # Group findings by severity
+    findings_by_severity = {
+        'ERROR': [],
+        'WARNING': [],
+        'INFO': []
     }
     
     for result in results:
         severity = result.get('extra', {}).get('severity', 'INFO')
-        if severity in severity_counts:
-            severity_counts[severity] += 1
+        if severity in findings_by_severity:
+            findings_by_severity[severity].append(result)
         else:
-            severity_counts['INFO'] += 1
+            findings_by_severity['INFO'].append(result)
+    
+    # Count findings by severity
+    severity_counts = {
+        'ERROR': len(findings_by_severity['ERROR']),
+        'WARNING': len(findings_by_severity['WARNING']),
+        'INFO': len(findings_by_severity['INFO'])
+    }
     
     total_findings = len(results)
     total_errors = len(errors)
@@ -670,19 +710,6 @@ def send_teams_report(report_data: Dict[str, Any], repo: str, refs: str) -> None
     # Determine success status (success if no ERROR findings)
     has_errors = severity_counts['ERROR'] > 0
     success = not has_errors
-    
-    # Prepare facts for Teams notification
-    facts = [
-        ("Repository", repo),
-        ("Reference", refs),
-        ("Total Findings", str(total_findings)),
-        ("🔴 ERROR", str(severity_counts['ERROR'])),
-        ("🟡 WARNING", str(severity_counts['WARNING'])),
-        ("🔵 INFO", str(severity_counts['INFO'])),
-    ]
-    
-    if total_errors > 0:
-        facts.append(("Scan Errors", str(total_errors)))
     
     # Generate summary message
     if total_findings == 0:
@@ -695,13 +722,86 @@ def send_teams_report(report_data: Dict[str, Any], repo: str, refs: str) -> None
         summary = f"⚠️  Found {total_findings} security finding(s) in {repo} ({refs})"
         status_text = "WARNINGS FOUND"
     
-    # Send notification
+    # Build sections for Teams notification
+    sections = []
+    
+    # Summary section with facts
+    summary_facts = [
+        ("Repository", repo),
+        ("Reference", refs),
+        ("Total Findings", str(total_findings)),
+        ("🔴 ERROR", str(severity_counts['ERROR'])),
+        ("🟡 WARNING", str(severity_counts['WARNING'])),
+        ("🔵 INFO", str(severity_counts['INFO'])),
+    ]
+    
+    if total_errors > 0:
+        summary_facts.append(("Scan Errors", str(total_errors)))
+    
+    sections.append({
+        "activityTitle": "📊 Scan Summary",
+        "facts": [
+            {"name": name, "value": value or "-"}
+            for name, value in summary_facts
+        ]
+    })
+    
+    # Critical Issues Section (ERROR)
+    if findings_by_severity['ERROR']:
+        error_texts = []
+        for finding in findings_by_severity['ERROR'][:20]:  # Limit to 20 findings
+            error_texts.append(format_finding_for_teams(finding))
+        
+        if len(findings_by_severity['ERROR']) > 20:
+            error_texts.append(f"\n*... and {len(findings_by_severity['ERROR']) - 20} more ERROR findings*")
+        
+        sections.append({
+            "activityTitle": f"🔴 Critical Issues ({severity_counts['ERROR']})",
+            "activitySubtitle": "These require immediate attention",
+            "text": "\n\n---\n\n".join(error_texts),
+            "markdown": True
+        })
+    
+    # Warnings Section (WARNING)
+    if findings_by_severity['WARNING']:
+        warning_texts = []
+        for finding in findings_by_severity['WARNING'][:15]:  # Limit to 15 findings
+            warning_texts.append(format_finding_for_teams(finding))
+        
+        if len(findings_by_severity['WARNING']) > 15:
+            warning_texts.append(f"\n*... and {len(findings_by_severity['WARNING']) - 15} more WARNING findings*")
+        
+        sections.append({
+            "activityTitle": f"🟡 Warnings ({severity_counts['WARNING']})",
+            "activitySubtitle": "These should be reviewed",
+            "text": "\n\n---\n\n".join(warning_texts),
+            "markdown": True
+        })
+    
+    # Info Section (INFO) - Limited to top 10
+    if findings_by_severity['INFO']:
+        info_texts = []
+        for finding in findings_by_severity['INFO'][:10]:  # Limit to 10 findings
+            info_texts.append(format_finding_for_teams(finding))
+        
+        if len(findings_by_severity['INFO']) > 10:
+            info_texts.append(f"\n*... and {len(findings_by_severity['INFO']) - 10} more INFO findings*")
+        
+        sections.append({
+            "activityTitle": f"🔵 Informational ({severity_counts['INFO']})",
+            "activitySubtitle": "Best practices and recommendations",
+            "text": "\n\n---\n\n".join(info_texts),
+            "markdown": True
+        })
+    
+    # Send notification with rich sections
     send_teams_notification(
         webhook_url,
         title=f"SAST Scan {status_text}",
-        facts=facts,
+        facts=[],  # Empty facts, using sections instead
         success=success,
-        summary=summary
+        summary=summary,
+        sections=sections
     )
 
 
@@ -758,21 +858,22 @@ def cmd_sast_scan(args):
         # Display report
         display_report(report_data)
         
-        # Send report to Teams if webhook is configured
-        send_teams_report(report_data, repo, refs)
-        
         # Export report if requested
+        exported_file = None
         if args.export:
-            export_success = export_report(
+            exported_file = export_report(
                 report_data,
                 args.export,
                 args.output,
                 repo,
                 refs
             )
-            if not export_success:
+            if not exported_file:
                 cleanup()
                 sys.exit(1)
+        
+        # Send report to Teams if webhook is configured (include exported file info)
+        send_teams_report(report_data, repo, refs, exported_file)
         
     except KeyboardInterrupt:
         print("\n❌ Scan cancelled by user", file=sys.stderr)

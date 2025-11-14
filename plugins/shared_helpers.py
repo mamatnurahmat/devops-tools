@@ -266,9 +266,21 @@ def send_teams_notification(
     title: str,
     facts: List[Tuple[str, str]],
     success: bool,
-    summary: Optional[str] = None
+    summary: Optional[str] = None,
+    potential_actions: Optional[List[Dict[str, Any]]] = None,
+    sections: Optional[List[Dict[str, Any]]] = None
 ) -> None:
-    """Send a Microsoft Teams notification using MessageCard format."""
+    """Send a Microsoft Teams notification using MessageCard format.
+    
+    Args:
+        webhook_url: Teams webhook URL
+        title: Notification title
+        facts: List of (name, value) tuples for facts
+        success: Whether the operation was successful
+        summary: Optional summary text
+        potential_actions: Optional list of potential actions (e.g., OpenUri)
+        sections: Optional list of custom sections (if provided, facts will be ignored)
+    """
     if not webhook_url:
         return
     
@@ -282,7 +294,13 @@ def send_teams_notification(
         "summary": summary_text,
         "themeColor": theme_color,
         "title": f"{emoji} {title}",
-        "sections": [
+    }
+    
+    # Use custom sections if provided, otherwise use facts
+    if sections:
+        payload["sections"] = sections
+    else:
+        payload["sections"] = [
             {
                 "facts": [
                     {"name": name, "value": value or "-"}
@@ -290,7 +308,10 @@ def send_teams_notification(
                 ]
             }
         ]
-    }
+    
+    # Add potential actions if provided
+    if potential_actions:
+        payload["potentialAction"] = potential_actions
     
     try:
         response = requests.post(webhook_url, json=payload, timeout=10)
