@@ -12,7 +12,8 @@ from plugins.shared_helpers import (
     get_commit_hash_from_bitbucket,
     check_docker_image_exists,
     resolve_teams_webhook,
-    send_teams_notification
+    send_teams_notification,
+    send_loki_log
 )
 from plugins.ssh_helper import (
     run_remote_command,
@@ -153,7 +154,9 @@ class WebDeployer:
             cicd_data = json.loads(cicd_content)
             return cicd_data
         except Exception as e:
-            print(f"❌ Error fetching cicd.json: {e}", file=sys.stderr)
+            error_msg = f"Error fetching cicd.json: {e}"
+            print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('deploy-web', 'error', error_msg)
             return None
     
     def determine_host(self, cicd_config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], str]:
@@ -253,14 +256,19 @@ services:
             Exit code (0 for success, 1 for failure)
         """
         try:
+            send_loki_log('deploy-web', 'info', f"Starting deployment for {self.repo}:{self.refs}")
+            
             # Load auth
             auth_data = load_auth_file()
             
             # Step 1: Fetch cicd.json
             print("🔍 Fetching deployment configuration...")
+            send_loki_log('deploy-web', 'info', f"Fetching deployment configuration for {self.repo}:{self.refs}")
             cicd_config = self.fetch_cicd_config(auth_data)
             if not cicd_config:
-                self.result['message'] = 'Failed to fetch cicd.json'
+                error_msg = 'Failed to fetch cicd.json'
+                send_loki_log('deploy-web', 'error', error_msg)
+                self.result['message'] = error_msg
                 return 1
             
             # Extract configuration
@@ -268,7 +276,9 @@ services:
             port = cicd_config.get('PORT')
             
             if not image_name or not port:
-                print(f"❌ Error: Missing IMAGE or PORT in cicd.json", file=sys.stderr)
+                error_msg = 'Missing IMAGE or PORT in cicd.json'
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                send_loki_log('deploy-web', 'error', error_msg)
                 self.result['message'] = 'Missing required configuration in cicd.json'
                 return 1
             
@@ -276,7 +286,9 @@ services:
             host, domain, environment = self.determine_host(cicd_config)
             
             if not host:
-                print(f"❌ Error: No host configured for environment '{environment}'", file=sys.stderr)
+                error_msg = f"No host configured for environment '{environment}'"
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                send_loki_log('deploy-web', 'error', error_msg)
                 self.result['message'] = f'No host configured for {environment}'
                 return 1
             
@@ -284,6 +296,7 @@ services:
             self.result['host'] = host
             
             print(f"🎯 Target: {environment} ({host})")
+            send_loki_log('deploy-web', 'info', f"Target: {environment} ({host})")
             
             # Determine image to use
             if self.custom_image:
@@ -293,6 +306,7 @@ services:
                 
                 # Skip Docker Hub check for custom images (might be from different registry)
                 print(f"ℹ️  Custom image mode - skipping Docker Hub validation")
+                send_loki_log('deploy-web', 'info', f"Using custom image: {full_image} (skipping Docker Hub validation)")
             else:
                 # Auto-generated image from commit hash
                 commit_info = get_commit_hash_from_bitbucket(self.repo, self.refs, auth_data)
@@ -304,23 +318,28 @@ services:
                 
                 # Step 3: Check if image exists in Docker Hub
                 print(f"🔍 Checking if image exists in Docker Hub...")
+                send_loki_log('deploy-web', 'info', f"Checking if image exists in Docker Hub: {full_image}")
                 check_result = check_docker_image_exists(full_image, auth_data, verbose=False)
                 
                 if not check_result['exists']:
-                    print(f"❌ Error: Image {full_image} not found in Docker Hub", file=sys.stderr)
+                    error_msg = f"Image {full_image} not found in Docker Hub"
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
                     if check_result.get('error'):
                         print(f"   Reason: {check_result['error']}", file=sys.stderr)
                     print(f"   Please build the image first using: doq devops-ci {self.repo} {self.refs}", file=sys.stderr)
+                    send_loki_log('deploy-web', 'error', error_msg)
                     self.result['message'] = check_result.get('error', 'Image not found in Docker Hub')
                     return 1
                 
                 print(f"✅ Image found in Docker Hub")
+                send_loki_log('deploy-web', 'info', f"Image found in Docker Hub: {full_image}")
             
             self.result['image'] = full_image
             
             # Step 4: Check existing deployment
             ssh_user = self.config.get('ssh.user', 'devops')
             print(f"🔍 Checking existing deployment on {ssh_user}@{host}...")
+            send_loki_log('deploy-web', 'info', f"Checking existing deployment on {ssh_user}@{host}")
             
             current_image = self.check_remote_image(host, ssh_user)
             self.result['previous_image'] = current_image
@@ -328,7 +347,9 @@ services:
             # Step 5: Deploy based on current state
             if current_image == full_image:
                 # Case A: Same image - skip
-                print(f"✅ Already deployed with same image: {full_image}")
+                skip_msg = f"Already deployed with same image: {full_image}"
+                print(f"✅ {skip_msg}")
+                send_loki_log('deploy-web', 'info', skip_msg)
                 self.result['success'] = True
                 self.result['action'] = 'skipped'
                 self.result['message'] = 'Already deployed with same image'
@@ -341,84 +362,114 @@ services:
             if current_image is None:
                 # Case B: New deployment
                 print(f"🆕 New deployment to {host}")
+                send_loki_log('deploy-web', 'info', f"New deployment to {host}")
                 self.result['action'] = 'deployed'
                 
                 # Create directory
                 print(f"📁 Creating directory ~/{self.repo}...")
+                send_loki_log('deploy-web', 'info', f"Creating directory ~/{self.repo} on {host}")
                 if not create_remote_directory(host, ssh_user, f"~/{self.repo}"):
-                    print(f"❌ Error: Failed to create directory", file=sys.stderr)
-                    self.result['message'] = 'Failed to create directory'
+                    error_msg = 'Failed to create directory'
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
                 # Upload docker-compose.yaml
                 print(f"📤 Uploading docker-compose.yaml...")
+                send_loki_log('deploy-web', 'info', f"Uploading docker-compose.yaml to {host}")
                 if not write_remote_file(host, ssh_user, compose_path, compose_content):
-                    print(f"❌ Error: Failed to upload docker-compose.yaml", file=sys.stderr)
-                    self.result['message'] = 'Failed to upload docker-compose.yaml'
+                    error_msg = 'Failed to upload docker-compose.yaml'
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
                 # Pull and start
                 print(f"🐳 Pulling image...")
+                send_loki_log('deploy-web', 'info', f"Pulling image {full_image} on {host}")
                 pull_cmd = f"cd ~/{self.repo} && docker pull {full_image}"
                 success, stdout, stderr = run_remote_command(host, ssh_user, pull_cmd, timeout=300)
                 
                 if not success:
+                    error_msg = f'Failed to pull image: {stderr}'
                     print(f"❌ Error pulling image: {stderr}", file=sys.stderr)
-                    self.result['message'] = f'Failed to pull image: {stderr}'
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
                 print(f"🚀 Starting container...")
+                send_loki_log('deploy-web', 'info', f"Starting container on {host}")
                 up_cmd = f"cd ~/{self.repo} && docker compose up -d"
                 success, stdout, stderr = run_remote_command(host, ssh_user, up_cmd, timeout=120)
                 
                 if not success:
+                    error_msg = f'Failed to start container: {stderr}'
                     print(f"❌ Error starting container: {stderr}", file=sys.stderr)
-                    self.result['message'] = f'Failed to start container: {stderr}'
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
+                success_msg = f"Deployment successful! Image {full_image} deployed to {host}"
                 print(f"✅ Deployment successful!")
+                send_loki_log('deploy-web', 'info', success_msg)
                 self.result['success'] = True
                 self.result['message'] = 'Deployment successful'
                 return self._finalize(0)
                 
             else:
                 # Case C: Update existing
-                print(f"🔄 Updating deployment (from {current_image} to {full_image})")
+                update_msg = f"Updating deployment (from {current_image} to {full_image})"
+                print(f"🔄 {update_msg}")
+                send_loki_log('deploy-web', 'info', update_msg)
                 self.result['action'] = 'updated'
                 
                 # Upload updated docker-compose.yaml
                 print(f"📤 Updating docker-compose.yaml...")
+                send_loki_log('deploy-web', 'info', f"Updating docker-compose.yaml on {host}")
                 if not write_remote_file(host, ssh_user, compose_path, compose_content):
-                    print(f"❌ Error: Failed to update docker-compose.yaml", file=sys.stderr)
-                    self.result['message'] = 'Failed to update docker-compose.yaml'
+                    error_msg = 'Failed to update docker-compose.yaml'
+                    print(f"❌ Error: {error_msg}", file=sys.stderr)
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
                 # Pull and restart
                 print(f"🐳 Pulling new image...")
+                send_loki_log('deploy-web', 'info', f"Pulling new image {full_image} on {host}")
                 pull_cmd = f"cd ~/{self.repo} && docker compose pull"
                 success, stdout, stderr = run_remote_command(host, ssh_user, pull_cmd, timeout=300)
                 
                 if not success:
+                    error_msg = f'Failed to pull image: {stderr}'
                     print(f"❌ Error pulling image: {stderr}", file=sys.stderr)
-                    self.result['message'] = f'Failed to pull image: {stderr}'
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
                 print(f"🔄 Restarting container...")
+                send_loki_log('deploy-web', 'info', f"Restarting container on {host}")
                 up_cmd = f"cd ~/{self.repo} && docker compose up -d"
                 success, stdout, stderr = run_remote_command(host, ssh_user, up_cmd, timeout=120)
                 
                 if not success:
+                    error_msg = f'Failed to restart container: {stderr}'
                     print(f"❌ Error restarting container: {stderr}", file=sys.stderr)
-                    self.result['message'] = f'Failed to restart container: {stderr}'
+                    send_loki_log('deploy-web', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
+                success_msg = f"Update successful! Image {full_image} updated on {host}"
                 print(f"✅ Update successful!")
+                send_loki_log('deploy-web', 'info', success_msg)
                 self.result['success'] = True
                 self.result['message'] = 'Update successful'
                 return self._finalize(0)
         
         except Exception as e:
-            print(f"❌ Error during deployment: {e}", file=sys.stderr)
+            error_msg = f"Error during deployment: {e}"
+            print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('deploy-web', 'error', error_msg)
             self.result['message'] = str(e)
             return self._finalize(1)
     
