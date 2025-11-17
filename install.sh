@@ -233,10 +233,23 @@ echo "? Dependencies terinstall"
 # Install package to user site-packages for global module availability
 echo ""
 echo "? Menginstall package ke user site-packages (global) menggunakan pip..."
-python3 -m pip install --user -e . || {
-    echo "?? Warning: Gagal menginstall dengan 'python3 -m pip install --user -e .'"
-    echo "   Anda masih bisa menggunakan doq via wrapper jika modul tersedia."
-}
+
+# Check if we're in a temporary directory (doq update scenario)
+# If so, install non-editable to avoid broken symlinks after temp dir cleanup
+CURRENT_DIR="$(pwd)"
+if [[ "${CURRENT_DIR}" =~ ^/tmp/doq-update- ]]; then
+    echo "   Detected temporary directory - installing non-editable copy..."
+    python3 -m pip install --user . || {
+        echo "?? Warning: Gagal menginstall dengan 'python3 -m pip install --user .'"
+        echo "   Anda masih bisa menggunakan doq via wrapper jika modul tersedia."
+    }
+else
+    # For normal installation, use editable install
+    python3 -m pip install --user -e . || {
+        echo "?? Warning: Gagal menginstall dengan 'python3 -m pip install --user -e .'"
+        echo "   Anda masih bisa menggunakan doq via wrapper jika modul tersedia."
+    }
+fi
 
 # Ensure ~/.local/bin is on PATH for future shells
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "${HOME}/.local/bin"; then
