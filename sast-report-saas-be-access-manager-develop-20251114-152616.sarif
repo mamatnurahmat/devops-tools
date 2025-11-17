@@ -1,0 +1,246 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep",
+          "informationUri": "https://semgrep.dev",
+          "rules": [
+            {
+              "id": "yaml.kubernetes.security.allow-privilege-escalation.allow-privilege-escalation",
+              "shortDescription": {
+                "text": "yaml.kubernetes.security.allow-privilege-escalation.allow-privilege-escalation"
+              }
+            },
+            {
+              "id": "go.lang.security.audit.crypto.math_random.math-random-used",
+              "shortDescription": {
+                "text": "go.lang.security.audit.crypto.math_random.math-random-used"
+              }
+            },
+            {
+              "id": "problem-based-packs.insecure-transport.go-stdlib.http-customized-request.http-customized-request",
+              "shortDescription": {
+                "text": "problem-based-packs.insecure-transport.go-stdlib.http-customized-request.http-customized-request"
+              }
+            },
+            {
+              "id": "go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter",
+              "shortDescription": {
+                "text": "go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter"
+              }
+            },
+            {
+              "id": "go.grpc.security.grpc-client-insecure-connection.grpc-client-insecure-connection",
+              "shortDescription": {
+                "text": "go.grpc.security.grpc-client-insecure-connection.grpc-client-insecure-connection"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "yaml.kubernetes.security.allow-privilege-escalation.allow-privilege-escalation",
+          "level": "warning",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/.develop-saas-saas-be-access-manager-deploy.yaml"
+                },
+                "region": {
+                  "startLine": 166,
+                  "startColumn": 9,
+                  "endLine": 166,
+                  "endColumn": 24
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.lang.security.audit.crypto.math_random.math-random-used",
+          "level": "warning",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/apps/jatis.go"
+                },
+                "region": {
+                  "startLine": 11,
+                  "startColumn": 3,
+                  "endLine": 11,
+                  "endColumn": 12
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "problem-based-packs.insecure-transport.go-stdlib.http-customized-request.http-customized-request",
+          "level": "warning",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/controllers/profile-foto.go"
+                },
+                "region": {
+                  "startLine": 40,
+                  "startColumn": 14,
+                  "endLine": 40,
+                  "endColumn": 81
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.lang.security.audit.crypto.math_random.math-random-used",
+          "level": "warning",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/helpers/helpers.go"
+                },
+                "region": {
+                  "startLine": 9,
+                  "startColumn": 12,
+                  "endLine": 9,
+                  "endColumn": 21
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter",
+          "level": "warning",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/helpers/helpers.go"
+                },
+                "region": {
+                  "startLine": 50,
+                  "startColumn": 2,
+                  "endLine": 50,
+                  "endColumn": 52
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.lang.security.audit.crypto.math_random.math-random-used",
+          "level": "warning",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/main.go"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 3,
+                  "endLine": 7,
+                  "endColumn": 12
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.grpc.security.grpc-client-insecure-connection.grpc-client-insecure-connection",
+          "level": "error",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/rpc/client.go"
+                },
+                "region": {
+                  "startLine": 18,
+                  "startColumn": 17,
+                  "endLine": 18,
+                  "endColumn": 59
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.grpc.security.grpc-client-insecure-connection.grpc-client-insecure-connection",
+          "level": "error",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/rpc/client.go"
+                },
+                "region": {
+                  "startLine": 30,
+                  "startColumn": 17,
+                  "endLine": 30,
+                  "endColumn": 59
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "go.grpc.security.grpc-client-insecure-connection.grpc-client-insecure-connection",
+          "level": "error",
+          "message": {
+            "text": "No message"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/tmp/doq-sast-saas-be-access-manager-2lixjz14/saas-be-access-manager/rpc/client.go"
+                },
+                "region": {
+                  "startLine": 42,
+                  "startColumn": 17,
+                  "endLine": 42,
+                  "endColumn": 59
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -68,6 +68,60 @@ class PluginManager:
         self._loaded_modules: Dict[str, Any] = {}
         self._initialized = True
     
+    def _get_default_plugins(self) -> List[Dict[str, Any]]:
+        """Get list of default plugins.
+        
+        Returns:
+            List of default plugin dictionaries
+        """
+        return [
+            {
+                "name": "devops-ci",
+                "enabled": True,
+                "version": "2.0.1",
+                "module": "plugins.devops_ci",
+                "config_file": "plugins/devops-ci.json",
+                "commands": ["devops-ci"],
+                "description": "DevOps CI/CD Docker image builder"
+            },
+            {
+                "name": "docker-utils",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.docker_utils",
+                "config_file": "plugins/docker-utils.json",
+                "commands": ["images", "get-cicd"],
+                "description": "Docker image checking and CI/CD config utilities"
+            },
+            {
+                "name": "web-deployer",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.web_deployer",
+                "config_file": "plugins/web-deployer.json",
+                "commands": ["deploy-web"],
+                "description": "Web application deployment via Docker Compose"
+            },
+            {
+                "name": "k8s-deployer",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.k8s_deployer",
+                "config_file": "plugins/k8s-deployer.json",
+                "commands": ["deploy-k8s"],
+                "description": "Kubernetes application deployment"
+            },
+            {
+                "name": "sast",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.sast",
+                "config_file": "plugins/sast.json",
+                "commands": ["sast"],
+                "description": "Static Application Security Testing using Semgrep"
+            }
+        ]
+    
     def ensure_plugin_structure(self):
         """Ensure plugin directory structure exists."""
         # Create directories
@@ -78,44 +132,7 @@ class PluginManager:
         if not self.plugins_file.exists():
             default_plugins = {
                 "version": "1.0",
-                "plugins": [
-                    {
-                        "name": "devops-ci",
-                        "enabled": True,
-                        "version": "2.0.1",
-                        "module": "plugins.devops_ci",
-                        "config_file": "plugins/devops-ci.json",
-                        "commands": ["devops-ci"],
-                        "description": "DevOps CI/CD Docker image builder"
-                    },
-                    {
-                        "name": "docker-utils",
-                        "enabled": True,
-                        "version": "1.0.0",
-                        "module": "plugins.docker_utils",
-                        "config_file": "plugins/docker-utils.json",
-                        "commands": ["images", "get-cicd"],
-                        "description": "Docker image checking and CI/CD config utilities"
-                    },
-                    {
-                        "name": "web-deployer",
-                        "enabled": True,
-                        "version": "1.0.0",
-                        "module": "plugins.web_deployer",
-                        "config_file": "plugins/web-deployer.json",
-                        "commands": ["deploy-web"],
-                        "description": "Web application deployment via Docker Compose"
-                    },
-                    {
-                        "name": "k8s-deployer",
-                        "enabled": True,
-                        "version": "1.0.0",
-                        "module": "plugins.k8s_deployer",
-                        "config_file": "plugins/k8s-deployer.json",
-                        "commands": ["deploy-k8s"],
-                        "description": "Kubernetes application deployment"
-                    }
-                ]
+                "plugins": self._get_default_plugins()
             }
             
             try:
@@ -126,6 +143,8 @@ class PluginManager:
     
     def load_plugins(self) -> bool:
         """Load plugins from plugins.json.
+        
+        Automatically adds missing default plugins to existing plugins.json.
         
         Returns:
             bool: True if loaded successfully
@@ -140,7 +159,23 @@ class PluginManager:
                 data = json.load(f)
             
             plugins_list = data.get('plugins', [])
+            existing_plugin_names = {p.get('name') for p in plugins_list}
             
+            # Add missing default plugins
+            default_plugins = self._get_default_plugins()
+            added_plugins = False
+            for default_plugin in default_plugins:
+                if default_plugin['name'] not in existing_plugin_names:
+                    plugins_list.append(default_plugin)
+                    added_plugins = True
+            
+            # Save updated plugins.json if new plugins were added
+            if added_plugins:
+                data['plugins'] = plugins_list
+                with open(self.plugins_file, 'w') as f:
+                    json.dump(data, f, indent=2)
+            
+            # Load plugins
             for plugin_data in plugins_list:
                 plugin = PluginMetadata.from_dict(plugin_data)
                 self.plugins[plugin.name] = plugin

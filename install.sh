@@ -314,6 +314,15 @@ if not plugins_file.exists():
                 "config_file": "plugins/k8s-deployer.json",
                 "commands": ["deploy-k8s"],
                 "description": "Kubernetes application deployment"
+            },
+            {
+                "name": "sast",
+                "enabled": True,
+                "version": "1.0.0",
+                "module": "plugins.sast",
+                "config_file": "plugins/sast.json",
+                "commands": ["sast"],
+                "description": "Static Application Security Testing using Semgrep"
             }
         ]
     }

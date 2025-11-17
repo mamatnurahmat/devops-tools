@@ -41,6 +41,7 @@ only-include = [
     "plugins/web_deployer.py",
     "plugins/k8s_deployer.py",
     "plugins/set_image_yaml.py",
+    "plugins/sast.py",
     "README.md",
 ]
 

@@ -60,6 +60,46 @@ data:
 
             self.respond_json(HTTPStatus.OK, {"name": name, "value": value})
 
+        def do_PUT(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler naming)
+            LOGGER.debug("Received PUT path: %s", self.path)
+            if not self.path.startswith("/v1/auth/"):
+                self.respond_json(HTTPStatus.NOT_FOUND, {"error": "Not Found"})
+                return
+
+            name = self.path[len("/v1/auth/") :].strip()
+            if not name:
+                self.respond_json(HTTPStatus.BAD_REQUEST, {"error": "Name is required"})
+                return
+
+            # Read request body
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self.respond_json(HTTPStatus.BAD_REQUEST, {"error": "Request body is required"})
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode('utf-8'))
+                value = data.get('value')
+                if value is None:
+                    self.respond_json(HTTPStatus.BAD_REQUEST, {"error": "Field 'value' is required"})
+                    return
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                self.respond_json(HTTPStatus.BAD_REQUEST, {"error": f"Invalid JSON: {exc}"})
+                return
+
+            LOGGER.info("Storing key '%s' to Redis %s:%s", name, REDIS_HOST, REDIS_PORT)
+            try:
+                result = self.redis_client.set(name, value)
+                LOGGER.debug("Redis SET result for '%s': %s", name, result)
+                if result:
+                    self.respond_json(HTTPStatus.OK, {"name": name, "value": value, "status": "stored"})
+                else:
+                    self.respond_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Failed to store value"})
+            except redis.RedisError as exc:
+                LOGGER.exception("Redis error")
+                self.respond_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
         def log_message(self, format: str, *args) -> None:  # noqa: A003 (shadow built-in)
             LOGGER.debug("%s - %s", self.address_string(), format % args)
 
