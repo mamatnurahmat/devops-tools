@@ -557,6 +557,139 @@ DevOps Q sekarang terintegrasi dengan Docker image builder untuk build otomatis 
 
 > 📖 **Detailed Documentation**: Lihat [DEVOPS-CI.md](docs/DEVOPS-CI.md) untuk comprehensive guide dengan contoh lengkap
 
+## Loki Logging Integration
+
+DevOps Q mendukung integrasi logging ke Loki API untuk proses `devops-ci`, `deploy-k8s`, dan `deploy-web`. Log akan dikirim ke Loki ketika environment variable `LOKI_ENABLE='true'` diset.
+
+### Konfigurasi
+
+Set environment variables berikut untuk mengaktifkan logging ke Loki:
+
+```bash
+# Enable Loki logging
+export LOKI_ENABLE='true'
+
+# Loki API endpoint (default: https://dev-webhook-cicd.qoin.id/loki/api/v1/push)
+export LOKI_URL='https://dev-webhook-cicd.qoin.id/loki/api/v1/push'
+
+# Organization ID untuk header X-Scope-OrgID (default: production-qoin)
+export X-Scope-OrgID='production-qoin'
+```
+
+Atau tambahkan ke `~/.doq/.env`:
+
+```bash
+LOKI_ENABLE=true
+LOKI_URL=https://dev-webhook-cicd.qoin.id/loki/api/v1/push
+X-Scope-OrgID=production-qoin
+```
+
+### Format Log
+
+Log dikirim dalam format Loki API dengan stream labels:
+- `job: "doq"`
+- `level: "info"` atau `"error"` (tergantung jenis log)
+- `service: "devops-ci"`, `"deploy-k8s"`, atau `"deploy-web"`
+
+Contoh format log yang dikirim:
+
+```json
+{
+  "streams": [
+    {
+        "stream": {
+          "job": "doq",
+          "level": "info",
+          "service": "deploy-web"
+        },
+      "values": [
+        [
+          "1704067200000000000",
+          "Starting deployment for saas-fe-webadmin:development"
+        ]
+      ]
+    }
+  ]
+}
+```
+
+### Log yang Dikirim
+
+#### devops-ci
+- Build start (mode: API/Helper/Local)
+- Metadata fetching
+- Repository cloning
+- Docker image building
+- Image pushing
+- Build completion
+- Semua error cases
+
+#### deploy-k8s
+- Deployment start
+- Configuration fetching
+- Image status checking
+- Context switching
+- Image deployment
+- Deployment completion
+- Semua error cases
+
+#### deploy-web
+- Deployment start
+- Configuration fetching
+- Host determination
+- Image status checking (auto mode)
+- Remote deployment checking
+- Directory creation (new deployment)
+- Docker Compose file upload
+- Image pulling
+- Container starting/restarting
+- Deployment completion
+- Semua error cases
+
+### Contoh Penggunaan
+
+```bash
+# Enable Loki logging dan jalankan build
+export LOKI_ENABLE='true'
+export LOKI_URL='https://dev-webhook-cicd.qoin.id/loki/api/v1/push'
+export X-Scope-OrgID='production-qoin'
+
+doq devops-ci saas-be-core develop
+
+# Deploy ke Kubernetes dengan logging
+doq deploy-k8s saas-apigateway develop
+
+# Deploy web dengan logging
+doq deploy-web saas-fe-webadmin development
+```
+
+### Error Handling
+
+Logging ke Loki dirancang untuk tidak mengganggu proses utama:
+- Jika Loki API tidak tersedia atau error, proses tetap berjalan normal
+- Error logging ke Loki diabaikan secara silent
+- Timeout untuk request ke Loki: 5 detik
+
+### Query Log di Loki
+
+Setelah log dikirim ke Loki, Anda dapat query menggunakan LogQL:
+
+```logql
+# Query semua log dari devops-ci
+{job="doq", service="devops-ci"}
+
+# Query error logs
+{job="doq", level="error"}
+
+# Query log untuk service tertentu
+{job="doq", service="deploy-k8s"}
+{job="doq", service="deploy-web"}
+
+# Query dengan filter waktu
+{job="doq", service="devops-ci"} |~ "Build completed"
+{job="doq", service="deploy-web"} |~ "Deployment successful"
+```
+
 ## Web Application Deployment
 
 DevOps Q menyediakan automated web application deployment menggunakan Docker Compose over SSH dengan smart image management dan environment detection.
@@ -1325,6 +1458,11 @@ This is useful for CI/CD pipelines where you want to ensure image is always avai
 - `doq devops-ci <repo> <refs> --short` - Build silent mode (output image name only)
 - `doq devops-ci <repo> <refs> --helper --image-name <name>` - Helper mode dengan custom image
 - `doq devops-ci <repo> <refs> <custom-image>` - Build dengan custom image name
+
+### Loki Logging
+- Set `LOKI_ENABLE='true'` untuk mengaktifkan logging ke Loki
+- Log dikirim untuk proses `devops-ci`, `deploy-k8s`, dan `deploy-web`
+- Konfigurasi via environment variables: `LOKI_URL`, `X-Scope-OrgID`
 
 ### DevOps Utilities
 - `doq image <repo> <refs>` - Check Docker image status in Docker Hub
