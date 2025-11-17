@@ -203,8 +203,23 @@ echo ""
 echo "?? Menginstall dependencies dengan uv..."
 echo "   Working directory: $(pwd)"
 
+# Create virtual environment if it doesn't exist
+if [ ! -d ".venv" ]; then
+    echo "?? Membuat virtual environment..."
+    uv venv || {
+        echo "?? Error: Gagal membuat virtual environment"
+        echo "   Pastikan uv sudah terinstall dan tersedia di PATH"
+        echo "   Coba jalankan: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+        exit 1
+    }
+    echo "? Virtual environment dibuat"
+else
+    echo "? Virtual environment sudah ada"
+fi
+
 # Install project dependencies using UV_LINK_MODE=copy for user installation
 # This avoids permission issues and works in all environments without root
+# uv pip install will automatically use .venv if it exists in the current directory
 export UV_LINK_MODE=copy
 uv pip install -q -e . || {
     echo "?? Error: Gagal menginstall dependencies"
