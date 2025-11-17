@@ -12,7 +12,8 @@ from plugins.shared_helpers import (
     fetch_bitbucket_file,
     get_commit_hash_from_bitbucket,
     resolve_teams_webhook,
-    send_teams_notification
+    send_teams_notification,
+    send_loki_log
 )
 
 
@@ -140,7 +141,9 @@ class K8sDeployer:
             cicd_data = json.loads(cicd_content)
             return cicd_data
         except Exception as e:
-            print(f"❌ Error fetching cicd.json: {e}", file=sys.stderr)
+            error_msg = f"Error fetching cicd.json: {e}"
+            print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('deploy-k8s', 'error', error_msg)
             return None
     
     def determine_namespace(self, cicd_config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -155,7 +158,9 @@ class K8sDeployer:
         # Get PROJECT field from cicd.json
         deployment = self.deployment_override or cicd_config.get('DEPLOYMENT')
         if not deployment:
-            print(f"❌ Error: DEPLOYMENT field not found in cicd.json", file=sys.stderr)
+            error_msg = "DEPLOYMENT field not found in cicd.json"
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            send_loki_log('deploy-k8s', 'error', error_msg)
             return (None, None)
         
         if self.namespace_override:
@@ -163,7 +168,9 @@ class K8sDeployer:
         else:
             project = cicd_config.get('PROJECT')
             if not project:
-                print(f"❌ Error: PROJECT field not found in cicd.json", file=sys.stderr)
+                error_msg = "PROJECT field not found in cicd.json"
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                send_loki_log('deploy-k8s', 'error', error_msg)
                 return (None, None)
             namespace = f"{self.refs}-{project}"
         
@@ -333,31 +340,40 @@ class K8sDeployer:
             Exit code (0 for success, 1 for error)
         """
         try:
+            send_loki_log('deploy-k8s', 'info', f"Starting deployment for {self.repo}:{self.refs}")
+            
             # Step 1: Load authentication
             auth_data = load_auth_file()
             if not auth_data:
-                print(f"❌ Error: Authentication not found", file=sys.stderr)
-                print(f"   Please configure credentials in ~/.doq/auth.json", file=sys.stderr)
+                error_msg = "Authentication not found. Please configure credentials in ~/.doq/auth.json"
+                print(f"❌ Error: {error_msg}", file=sys.stderr)
+                send_loki_log('deploy-k8s', 'error', error_msg)
                 self.result['message'] = 'Authentication not found'
                 return self._finalize(1)
             
             # Step 2: Fetch cicd.json
             print(f"🔍 Fetching deployment configuration...")
+            send_loki_log('deploy-k8s', 'info', f"Fetching deployment configuration for {self.repo}:{self.refs}")
             cicd_config = self.fetch_cicd_config(auth_data)
             if not cicd_config:
-                self.result['message'] = 'Failed to fetch cicd.json'
+                error_msg = 'Failed to fetch cicd.json'
+                send_loki_log('deploy-k8s', 'error', error_msg)
+                self.result['message'] = error_msg
                 return self._finalize(1)
             
             # Step 3: Determine namespace and deployment
             namespace, deployment = self.determine_namespace(cicd_config)
             if not namespace or not deployment:
-                self.result['message'] = 'Failed to determine namespace or deployment'
+                error_msg = 'Failed to determine namespace or deployment'
+                send_loki_log('deploy-k8s', 'error', error_msg)
+                self.result['message'] = error_msg
                 return self._finalize(1)
             
             self.result['namespace'] = namespace
             self.result['deployment'] = deployment
             
             print(f"🎯 Target: {namespace} / {deployment}")
+            send_loki_log('deploy-k8s', 'info', f"Target: {namespace} / {deployment}")
             
             # Step 4: Determine image to use
             if self.custom_image:
@@ -365,12 +381,16 @@ class K8sDeployer:
                 full_image = self.custom_image
                 print(f"📦 Using custom image: {full_image}")
                 print(f"ℹ️  Custom image mode - skipping Docker Hub validation")
+                send_loki_log('deploy-k8s', 'info', f"Using custom image: {full_image} (skipping Docker Hub validation)")
             else:
                 # Auto mode - check image status
                 print(f"🔍 Checking image status...")
+                send_loki_log('deploy-k8s', 'info', f"Checking image status for {self.repo}:{self.refs}")
                 image_info = self.check_image_ready()
                 if not image_info:
-                    self.result['message'] = 'Image not ready in Docker Hub'
+                    error_msg = 'Image not ready in Docker Hub'
+                    send_loki_log('deploy-k8s', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 
                 # Get commit hash and construct image name
@@ -382,19 +402,25 @@ class K8sDeployer:
                 full_image = f"{namespace_prefix}/{image_name}:{tag}"
                 
                 print(f"✅ Image ready: {full_image}")
+                send_loki_log('deploy-k8s', 'info', f"Image ready: {full_image}")
             
             self.result['image'] = full_image
             
             # Step 5 (optional): Update GitOps manifests
             if self.gitops_mode:
                 print(f"🧩 Updating GitOps manifest in gitops-k8s repository...")
+                send_loki_log('deploy-k8s', 'info', f"Updating GitOps manifest in gitops-k8s repository")
                 if not self.update_gitops_manifest(namespace, deployment, full_image):
-                    self.result['message'] = 'Failed to update gitops-k8s manifest'
+                    error_msg = 'Failed to update gitops-k8s manifest'
+                    send_loki_log('deploy-k8s', 'error', error_msg)
+                    self.result['message'] = error_msg
                     return self._finalize(1)
                 print(f"✅ GitOps manifest updated")
+                send_loki_log('deploy-k8s', 'info', 'GitOps manifest updated')
             
             # Step 6: Get current deployment image
             print(f"🔍 Checking current deployment...")
+            send_loki_log('deploy-k8s', 'info', f"Checking current deployment in {namespace}/{deployment}")
             current_image = self.get_current_image(namespace, deployment)
             self.result['previous_image'] = current_image
             
@@ -402,9 +428,11 @@ class K8sDeployer:
             if current_image:
                 if current_image == full_image:
                     # Same image - skip deployment
+                    skip_msg = f"Already deployed with same image: {current_image}. Skipping deployment."
                     print(f"✅ Already deployed with same image")
                     print(f"   Current: {current_image}")
                     print(f"   Skipping deployment")
+                    send_loki_log('deploy-k8s', 'info', skip_msg)
                     self.result['success'] = True
                     self.result['action'] = 'skipped'
                     self.result['message'] = 'Already deployed with same image'
@@ -414,37 +442,52 @@ class K8sDeployer:
                     print(f"🔄 Different image detected")
                     print(f"   Current: {current_image}")
                     print(f"   New: {full_image}")
+                    send_loki_log('deploy-k8s', 'info', f"Different image detected. Current: {current_image}, New: {full_image}")
                     self.result['action'] = 'updated'
             else:
                 # First-time deployment
                 print(f"📦 New deployment (not found)")
+                send_loki_log('deploy-k8s', 'info', f"New deployment (not found) for {namespace}/{deployment}")
                 self.result['action'] = 'deployed'
             
             # Step 8: Switch context
             print(f"🔄 Switching context to {namespace}...")
+            send_loki_log('deploy-k8s', 'info', f"Switching context to {namespace}")
             if not self.switch_context(namespace):
-                self.result['message'] = 'Failed to switch context'
+                error_msg = 'Failed to switch context'
+                send_loki_log('deploy-k8s', 'error', error_msg)
+                self.result['message'] = error_msg
                 return self._finalize(1)
             print(f"✅ Context switched")
+            send_loki_log('deploy-k8s', 'info', f"Context switched to {namespace}")
             
             # Step 9: Deploy image
             action_verb = "Updating" if current_image else "Deploying"
             print(f"🚀 {action_verb} image...")
+            send_loki_log('deploy-k8s', 'info', f"{action_verb} image {full_image} to {namespace}/{deployment}")
             if not self.set_image(namespace, deployment, full_image):
-                self.result['message'] = 'Failed to set image'
+                error_msg = 'Failed to set image'
+                send_loki_log('deploy-k8s', 'error', error_msg)
+                self.result['message'] = error_msg
                 return self._finalize(1)
             
+            success_msg = f"Deployment successful! Image {full_image} deployed to {namespace}/{deployment}"
             print(f"✅ Deployment successful!")
+            send_loki_log('deploy-k8s', 'info', success_msg)
             self.result['success'] = True
             self.result['message'] = 'Deployment successful'
             return self._finalize(0)
             
         except KeyboardInterrupt:
-            print(f"\n❌ Deployment cancelled by user", file=sys.stderr)
+            error_msg = "Deployment cancelled by user"
+            print(f"\n❌ {error_msg}", file=sys.stderr)
+            send_loki_log('deploy-k8s', 'error', error_msg)
             self.result['message'] = 'Cancelled by user'
             return self._finalize(1)
         except Exception as e:
-            print(f"❌ Unexpected error: {e}", file=sys.stderr)
+            error_msg = f"Unexpected error: {e}"
+            print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('deploy-k8s', 'error', error_msg)
             self.result['message'] = str(e)
             return self._finalize(1)
     

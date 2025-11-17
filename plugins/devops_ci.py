@@ -19,7 +19,8 @@ from plugins.shared_helpers import (
     fetch_bitbucket_file,
     get_commit_hash_from_bitbucket,
     resolve_teams_webhook,
-    send_teams_notification
+    send_teams_notification,
+    send_loki_log
 )
 
 
@@ -258,9 +259,11 @@ class DevOpsCIBuilder:
         """
         if self.short_output:
             print(metadata['image_name'])
+            send_loki_log('devops-ci', 'info', f"Build completed: {metadata['image_name']}")
         elif not self.json_output:
             print(f"\n✅ Build completed successfully!")
             print(f"   Image: {metadata['image_name']}")
+            send_loki_log('devops-ci', 'info', f"Build completed successfully! Image: {metadata['image_name']}")
         
         self.result['success'] = True
         self.result['image'] = metadata['image_name']
@@ -268,6 +271,7 @@ class DevOpsCIBuilder:
         
         if self.json_output:
             print(json.dumps(self.result))
+            send_loki_log('devops-ci', 'info', f"Build successful: {metadata['image_name']}")
     
     def _get_tag_version(self, commit_info: Dict[str, Any]) -> str:
         """Get tag version from commit info based on ref_type.
@@ -290,19 +294,24 @@ class DevOpsCIBuilder:
             if self.local_mode:
                 if not self.short_output:
                     print("🏠 Running in LOCAL MODE")
+                send_loki_log('devops-ci', 'info', f"Starting build in LOCAL MODE for {self.repo}:{self.refs}")
                 exit_code = self._build_local_mode()
             elif self.helper_mode:
                 if not self.short_output:
                     print("🔧 Running in HELPER MODE")
+                send_loki_log('devops-ci', 'info', f"Starting build in HELPER MODE for {self.repo}:{self.refs}")
                 exit_code = self._build_helper_mode()
             else:
                 if not self.short_output:
                     print("🌐 Running in API MODE")
+                send_loki_log('devops-ci', 'info', f"Starting build in API MODE for {self.repo}:{self.refs}")
                 exit_code = self._build_api_mode()
         except Exception as e:
             self.result['message'] = str(e)
+            error_msg = f"Build failed: {e}"
             if not self.short_output:
-                print(f"❌ Build failed: {e}", file=sys.stderr)
+                print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('devops-ci', 'error', error_msg)
             if self.json_output:
                 print(json.dumps(self.result))
             exit_code = 1
@@ -334,8 +343,10 @@ class DevOpsCIBuilder:
         if not self.rebuild:
             check_result = check_docker_image_exists(metadata['image_name'], auth_data, verbose=False)
             if check_result['exists']:
+                skip_msg = f"Image already ready: {metadata['image_name']}. Skipping build."
                 if not self.short_output:
-                    print(f"✅ Image already ready: {metadata['image_name']}. Skipping build.")
+                    print(f"✅ {skip_msg}")
+                send_loki_log('devops-ci', 'info', skip_msg)
                 if self.short_output:
                     print(metadata['image_name'])
                 self.result['success'] = True
@@ -437,8 +448,10 @@ class DevOpsCIBuilder:
         try:
             build_config = self._load_local_build_config(repo_path)
         except Exception as e:
+            error_msg = f"Failed to read local cicd/cicd.json: {e}"
             if not self.short_output:
-                print(f"❌ Failed to read local cicd/cicd.json: {e}", file=sys.stderr)
+                print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('devops-ci', 'error', error_msg)
             return 1
         
         # Resolve commit information from local git
@@ -446,7 +459,9 @@ class DevOpsCIBuilder:
             commit_info = self._get_local_commit_info(repo_path)
         except Exception as e:
             if not self.short_output:
-                print(f"❌ Failed to resolve local git metadata: {e}", file=sys.stderr)
+                error_msg = f"Failed to resolve local git metadata: {e}"
+                print(f"❌ {error_msg}", file=sys.stderr)
+                send_loki_log('devops-ci', 'error', error_msg)
             return 1
         
         # Determine image name
@@ -559,6 +574,7 @@ class DevOpsCIBuilder:
         """Fetch build metadata using local Bitbucket API calls."""
         if not self.short_output:
             print(f"📦 Fetching build metadata for repo={self.repo}, refs={self.refs} ...")
+        send_loki_log('devops-ci', 'info', f"Fetching build metadata for repo={self.repo}, refs={self.refs}")
         
         try:
             # Get commit hash from Bitbucket
@@ -585,8 +601,10 @@ class DevOpsCIBuilder:
             }
         
         except Exception as e:
+            error_msg = f"Failed to fetch metadata: {e}"
             if not self.short_output:
-                print(f"❌ Failed to fetch metadata: {e}", file=sys.stderr)
+                print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('devops-ci', 'error', error_msg)
             return None
     
     def _fetch_build_config_local(self, auth_data: Dict[str, str]) -> Optional[Dict[str, Any]]:
@@ -666,14 +684,17 @@ class DevOpsCIBuilder:
             }
         
         except Exception as e:
+            error_msg = f"Failed to generate metadata: {e}"
             if not self.short_output:
-                print(f"❌ Failed to generate metadata: {e}", file=sys.stderr)
+                print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('devops-ci', 'error', error_msg)
             return None
     
     def _clone_repository(self, auth_data: Dict[str, str], metadata: Dict[str, Any]) -> bool:
         """Clone Git repository."""
         if not self.short_output:
             print(f"\n📥 Cloning repository...")
+        send_loki_log('devops-ci', 'info', f"Cloning repository {self.repo} (refs: {self.refs})")
         
         try:
             # Create temporary directory
@@ -712,12 +733,15 @@ class DevOpsCIBuilder:
             
             if not self.short_output:
                 print(f"✅ Repository cloned successfully")
+            send_loki_log('devops-ci', 'info', f"Repository cloned successfully: {self.repo}")
             
             return True
         
         except Exception as e:
+            error_msg = f"Clone failed: {e}"
             if not self.short_output:
-                print(f"❌ Clone failed: {e}", file=sys.stderr)
+                print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('devops-ci', 'error', error_msg)
             return False
     
     def _setup_builder(self, builder_name: str) -> bool:
@@ -781,6 +805,7 @@ class DevOpsCIBuilder:
         if not self.short_output:
             print(f"\n🔨 Building Docker image...")
             print(f"   Image: {metadata['image_name']}")
+        send_loki_log('devops-ci', 'info', f"Building Docker image: {metadata['image_name']}")
         
         context_dir = build_context or self.build_dir
         if not context_dir:
@@ -844,18 +869,22 @@ class DevOpsCIBuilder:
             
             if not self.short_output:
                 print(f"✅ Image built successfully")
+            send_loki_log('devops-ci', 'info', f"Image built successfully: {metadata['image_name']}")
             
             return True
         
         except Exception as e:
+            error_msg = f"Docker build failed: {e}"
             if not self.short_output:
-                print(f"❌ Build failed: {e}", file=sys.stderr)
+                print(f"❌ {error_msg}", file=sys.stderr)
+            send_loki_log('devops-ci', 'error', error_msg)
             return False
     
     def _push_docker_image(self, metadata: Dict[str, Any]) -> bool:
         """Push is already done by buildx --push flag."""
         if not self.short_output:
             print(f"✅ Image pushed to registry")
+        send_loki_log('devops-ci', 'info', f"Image pushed to registry: {metadata['image_name']}")
         return True
     
     def _send_notification(self, auth_data: Dict[str, str], image_name: str, status: str):
