@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import requests
 import os
 import base64
+import time
 
 
 # Bitbucket API constants
@@ -642,5 +643,74 @@ def load_netrc_credentials(machine: str) -> Dict[str, str]:
         if isinstance(e, (FileNotFoundError, ValueError)):
             raise
         raise RuntimeError(f"Failed to parse ~/.netrc: {str(e)}")
+
+
+def send_loki_log(service: str, level: str, message: str) -> None:
+    """Send log message to Loki API.
+    
+    This function sends logs to Loki API when LOKI_ENABLE='true' is set.
+    Logs are sent asynchronously and failures are silently ignored to not
+    interrupt the main process.
+    
+    Args:
+        service: Service name (e.g., 'devops-ci', 'deploy-k8s')
+        level: Log level (e.g., 'info', 'error', 'warning')
+        message: Log message content
+    """
+    # Check if Loki logging is enabled
+    loki_enable = os.getenv('LOKI_ENABLE', '').strip().lower()
+    if loki_enable != 'true':
+        return
+    
+    # Get Loki configuration from environment variables
+    loki_url = os.getenv('LOKI_URL', 'https://dev-webhook-cicd.qoin.id/loki/api/v1/push')
+    scope_org_id = os.getenv('X-Scope-OrgID', 'production-qoin')
+    
+    if not loki_url:
+        return
+    
+    # Generate timestamp in nanoseconds
+    timestamp_ns = str(time.time_ns())
+    
+    # Format log according to Loki API format
+    payload = {
+        "streams": [
+            {
+                "stream": {
+                    "job": "doq",
+                    "level": level,
+                    "service": service
+                },
+                "values": [
+                    [
+                        timestamp_ns,
+                        message
+                    ]
+                ]
+            }
+        ]
+    }
+    
+    # Prepare headers
+    headers = {
+        "Content-Type": "application/json",
+        "X-Scope-OrgID": scope_org_id
+    }
+    
+    # Send log to Loki (non-blocking, errors are silently ignored)
+    try:
+        response = requests.post(
+            loki_url,
+            json=payload,
+            headers=headers,
+            timeout=5
+        )
+        # Silently ignore errors - don't break main process
+        if response.status_code >= 400:
+            # Optionally log to stderr in debug mode, but don't raise
+            pass
+    except Exception:
+        # Silently ignore all exceptions - don't break main process
+        pass
 
 
