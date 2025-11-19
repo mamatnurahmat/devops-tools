@@ -228,7 +228,7 @@ class DevOpsCIBuilder:
                  helper_args: Optional[Dict[str, str]] = None,
                  builder_name: Optional[str] = None,
                  webhook_url: Optional[str] = None, no_cache: bool = False,
-                 local_mode: bool = False):
+                 local_mode: bool = False, build_args: Optional[Dict[str, str]] = None):
         """Initialize builder with configuration."""
         self.repo = repo
         self.refs = refs
@@ -242,6 +242,7 @@ class DevOpsCIBuilder:
         self.teams_webhook_url = resolve_teams_webhook(webhook_url)
         self.no_cache = no_cache
         self.local_mode = local_mode
+        self.build_args = build_args or {}
         
         self.config = BuildConfig()
         self.build_dir = None
@@ -854,6 +855,10 @@ class DevOpsCIBuilder:
                 if port:
                     build_cmd.extend(['--build-arg', f'PORT={port}'])
             
+            # Add build args from command line (can override config file args)
+            for key, value in self.build_args.items():
+                build_cmd.extend(['--build-arg', f'{key}={value}'])
+            
             # Add build directory
             build_cmd.append('.')
             
@@ -1025,6 +1030,20 @@ def cmd_devops_ci(args):
     # Detect helper mode
     helper_mode, helper_args = _detect_helper_mode(args)
     
+    # Parse build args from command line
+    build_args = {}
+    build_arg_list = getattr(args, 'build_arg', None) or []
+    for build_arg_str in build_arg_list:
+        if '=' not in build_arg_str:
+            print(f"❌ Error: Invalid build-arg format: {build_arg_str}", file=sys.stderr)
+            print("   Expected format: KEY=VALUE", file=sys.stderr)
+            sys.exit(1)
+        key, value = build_arg_str.split('=', 1)
+        if not key.strip():
+            print(f"❌ Error: Build arg key cannot be empty: {build_arg_str}", file=sys.stderr)
+            sys.exit(1)
+        build_args[key.strip()] = value
+    
     # Create builder
     builder = DevOpsCIBuilder(
         repo=args.repo,
@@ -1038,7 +1057,8 @@ def cmd_devops_ci(args):
         builder_name=getattr(args, 'use_builder', None),
         webhook_url=getattr(args, 'webhook', None),
         no_cache=args.no_cache,
-        local_mode=getattr(args, 'local', False)
+        local_mode=getattr(args, 'local', False),
+        build_args=build_args
     )
     
     # Run build
@@ -1085,6 +1105,8 @@ def register_commands(subparsers):
                                   help='Microsoft Teams webhook URL for build notifications (fallback to TEAMS_WEBHOOK env or ~/.doq/.env)')
     devops_ci_parser.add_argument('--local', action='store_true',
                                   help='Build from current working directory without cloning repository')
+    devops_ci_parser.add_argument('--build-arg', action='append',
+                                  help='Build argument in format KEY=VALUE (can be used multiple times)')
     devops_ci_parser.add_argument('--help-devops-ci', action='store_true',
                                    help='Show detailed DevOps CI help')
     devops_ci_parser.add_argument('--version-devops-ci', action='store_true',
