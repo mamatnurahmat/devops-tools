@@ -153,7 +153,7 @@ class BuildConfig:
                 "namespace": "loyaltolpi",
                 "buildx_args": [
                     "--sbom=true",
-                    "--provenance=true",
+                    # "--provenance=true",  # Menggunakan --attest type=provenance,mode=max di kode build
                     "--platform=linux/amd64"
                 ]
             },
