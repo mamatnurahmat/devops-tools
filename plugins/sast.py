@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Static Application Security Testing (SAST) plugin using Semgrep CLI."""
+from __future__ import annotations
 import json
 import os
 import subprocess

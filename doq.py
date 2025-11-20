@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """DevOps Q - Simple CLI tool for managing Rancher resources."""
+from __future__ import annotations
 import argparse
 import getpass
 import os

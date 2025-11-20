@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Configuration utilities for plugin and core config management."""
+from __future__ import annotations
 import json
 import os
 from pathlib import Path

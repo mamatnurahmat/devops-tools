@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Kubernetes application deployment plugin."""
+from __future__ import annotations
 import json
 import sys
 import subprocess

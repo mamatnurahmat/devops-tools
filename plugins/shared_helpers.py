@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Shared helper functions for doq plugins."""
+from __future__ import annotations
 import json
 import sys
 from pathlib import Path

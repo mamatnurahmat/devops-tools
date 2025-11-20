@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """FastAPI Web Server for DevOps Tools."""
+from __future__ import annotations
 import sys
 import io
 import uuid

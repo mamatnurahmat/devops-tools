@@ -3,7 +3,7 @@ name = "devops-q"
 version = "1.0.0"
 description = "DevOps Q - Simple CLI tool for managing Rancher resources"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.8"  # Required for type annotations and dataclasses
 authors = [
     {name = "DevOps Team"}
 ]

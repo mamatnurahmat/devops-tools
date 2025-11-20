@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """DevOps CI/CD Build Tool - Python implementation."""
+from __future__ import annotations
 import json
 import os
 import subprocess
