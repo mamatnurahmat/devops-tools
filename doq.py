@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """DevOps Q - Simple CLI tool for managing Rancher resources."""
+from __future__ import annotations
 import argparse
 import getpass
 import os
@@ -824,24 +825,35 @@ def cmd_kube_config(args):
     try:
         api = RancherAPI()
         
-        if not args.project_id:
-            print("Error: project_id is required", file=sys.stderr)
-            print("Usage: doq kube-config <project-id>", file=sys.stderr)
+        # Validation: --all and project_id cannot be used together
+        if args.all and args.project_id:
+            print("Error: --all and project_id cannot be used together", file=sys.stderr)
+            print("Usage: doq kube-config [<project-id>|--all]", file=sys.stderr)
             sys.exit(1)
         
-        project_id = args.project_id
+        # Validation: either project_id or --all must be provided
+        if not args.all and not args.project_id:
+            print("Error: project_id is required or use --all flag", file=sys.stderr)
+            print("Usage: doq kube-config <project-id> or doq kube-config --all", file=sys.stderr)
+            sys.exit(1)
         
-        print(f"Getting kubeconfig for project: {project_id}")
-        
-        # Get kubeconfig from project
-        # flatten defaults to True via set_defaults
-        kubeconfig_content = api.get_kubeconfig_from_project(project_id, flatten=args.flatten)
-        
-        # Parse kubeconfig
-        if isinstance(kubeconfig_content, str):
-            kubeconfig_data = yaml.safe_load(kubeconfig_content)
+        # Get list of project IDs to process
+        project_ids = []
+        if args.all:
+            # Get all System projects (same logic as cmd_list_projects default)
+            print("Getting all System projects...")
+            projects = api.list_projects(cluster_id=None)
+            # Filter to System projects only
+            system_projects = [p for p in projects if p.get('name', '').lower() == 'system']
+            project_ids = [p.get('id', '') for p in system_projects if p.get('id', '')]
+            
+            if not project_ids:
+                print("Error: No System projects found", file=sys.stderr)
+                sys.exit(1)
+            
+            print(f"Found {len(project_ids)} System project(s)")
         else:
-            kubeconfig_data = kubeconfig_content
+            project_ids = [args.project_id]
         
         # Ensure ~/.kube directory exists
         kube_dir = Path.home() / '.kube'
@@ -858,9 +870,9 @@ def cmd_kube_config(args):
                 print(f"Warning: Could not read existing kubeconfig: {e}", file=sys.stderr)
                 existing_config = None
         
-        # Merge or replace config
+        # Initialize final config
         if existing_config and not args.replace:
-            # Merge: add new context to existing config
+            # Start with existing config for merging
             if 'clusters' not in existing_config:
                 existing_config['clusters'] = []
             if 'users' not in existing_config:
@@ -869,54 +881,96 @@ def cmd_kube_config(args):
                 existing_config['contexts'] = []
             if 'current-context' not in existing_config:
                 existing_config['current-context'] = ''
-            
-            # Add clusters from new config
-            if 'clusters' in kubeconfig_data:
-                for cluster in kubeconfig_data['clusters']:
-                    # Check if cluster already exists
-                    cluster_exists = any(
-                        c.get('name') == cluster.get('name') 
-                        for c in existing_config['clusters']
-                    )
-                    if not cluster_exists:
-                        existing_config['clusters'].append(cluster)
-            
-            # Add users from new config
-            if 'users' in kubeconfig_data:
-                for user in kubeconfig_data['users']:
-                    user_exists = any(
-                        u.get('name') == user.get('name') 
-                        for u in existing_config['users']
-                    )
-                    if not user_exists:
-                        existing_config['users'].append(user)
-            
-            # Add contexts from new config
-            if 'contexts' in kubeconfig_data:
-                for context in kubeconfig_data['contexts']:
-                    context_exists = any(
-                        c.get('name') == context.get('name') 
-                        for c in existing_config['contexts']
-                    )
-                    if not context_exists:
-                        existing_config['contexts'].append(context)
-                    else:
-                        # Update existing context
-                        for i, c in enumerate(existing_config['contexts']):
-                            if c.get('name') == context.get('name'):
-                                existing_config['contexts'][i] = context
-                                break
-            
-            # Set current context if specified or if not set
-            if args.set_context and 'contexts' in kubeconfig_data and kubeconfig_data['contexts']:
-                existing_config['current-context'] = kubeconfig_data['contexts'][0].get('name')
-            elif not existing_config['current-context'] and 'contexts' in kubeconfig_data and kubeconfig_data['contexts']:
-                existing_config['current-context'] = kubeconfig_data['contexts'][0].get('name')
-            
             final_config = existing_config
         else:
-            # Replace: use new config as-is
-            final_config = kubeconfig_data
+            # Start fresh if replacing or no existing config
+            final_config = {
+                'apiVersion': 'v1',
+                'kind': 'Config',
+                'clusters': [],
+                'users': [],
+                'contexts': [],
+                'current-context': ''
+            }
+        
+        # Process each project
+        first_context = None
+        success_count = 0
+        failed_projects = []
+        
+        for project_id in project_ids:
+            try:
+                print(f"Getting kubeconfig for project: {project_id}")
+                
+                # Get kubeconfig from project
+                # flatten defaults to True via set_defaults
+                kubeconfig_content = api.get_kubeconfig_from_project(project_id, flatten=args.flatten)
+                
+                # Parse kubeconfig
+                if isinstance(kubeconfig_content, str):
+                    kubeconfig_data = yaml.safe_load(kubeconfig_content)
+                else:
+                    kubeconfig_data = kubeconfig_content
+                
+                if not kubeconfig_data:
+                    print(f"Warning: Empty kubeconfig for project {project_id}, skipping", file=sys.stderr)
+                    failed_projects.append(project_id)
+                    continue
+                
+                # Merge kubeconfig into final_config
+                # Add clusters from new config
+                if 'clusters' in kubeconfig_data:
+                    for cluster in kubeconfig_data['clusters']:
+                        # Check if cluster already exists
+                        cluster_exists = any(
+                            c.get('name') == cluster.get('name') 
+                            for c in final_config['clusters']
+                        )
+                        if not cluster_exists:
+                            final_config['clusters'].append(cluster)
+                
+                # Add users from new config
+                if 'users' in kubeconfig_data:
+                    for user in kubeconfig_data['users']:
+                        user_exists = any(
+                            u.get('name') == user.get('name') 
+                            for u in final_config['users']
+                        )
+                        if not user_exists:
+                            final_config['users'].append(user)
+                
+                # Add contexts from new config
+                if 'contexts' in kubeconfig_data:
+                    for context in kubeconfig_data['contexts']:
+                        context_exists = any(
+                            c.get('name') == context.get('name') 
+                            for c in final_config['contexts']
+                        )
+                        if not context_exists:
+                            final_config['contexts'].append(context)
+                            # Store first context for --set-context
+                            if first_context is None:
+                                first_context = context.get('name', '')
+                        else:
+                            # Update existing context
+                            for i, c in enumerate(final_config['contexts']):
+                                if c.get('name') == context.get('name'):
+                                    final_config['contexts'][i] = context
+                                    break
+                
+                success_count += 1
+                print(f"? Successfully processed project: {project_id}")
+                
+            except Exception as e:
+                print(f"Warning: Failed to get kubeconfig for project {project_id}: {e}", file=sys.stderr)
+                failed_projects.append(project_id)
+                continue
+        
+        # Set current context if specified or if not set
+        if args.set_context and first_context:
+            final_config['current-context'] = first_context
+        elif not final_config.get('current-context') and first_context:
+            final_config['current-context'] = first_context
         
         # Write config to file
         with open(kube_config_path, 'w') as f:
@@ -925,7 +979,11 @@ def cmd_kube_config(args):
         # Set proper permissions
         os.chmod(kube_config_path, 0o600)
         
-        print(f"? Kubeconfig saved to {kube_config_path}")
+        print(f"\n? Kubeconfig saved to {kube_config_path}")
+        print(f"? Successfully processed {success_count} project(s)")
+        
+        if failed_projects:
+            print(f"Warning: Failed to process {len(failed_projects)} project(s): {', '.join(failed_projects)}", file=sys.stderr)
         
         if 'contexts' in final_config and final_config['contexts']:
             current_context = final_config.get('current-context', '')
@@ -3057,7 +3115,9 @@ def main():
     
     # Kubeconfig command
     kubeconfig_parser = subparsers.add_parser('kube-config', help='Get kubeconfig from project and save to ~/.kube/config')
-    kubeconfig_parser.add_argument('project_id', help='Project ID')
+    kubeconfig_parser.add_argument('project_id', nargs='?', help='Project ID')
+    kubeconfig_parser.add_argument('--all', action='store_true',
+                                    help='Get and merge kubeconfig from all System projects')
     kubeconfig_parser.add_argument('--flatten', action='store_true', default=True,
                                     help='Flatten kubeconfig (default: True)')
     kubeconfig_parser.add_argument('--no-flatten', action='store_false', dest='flatten',

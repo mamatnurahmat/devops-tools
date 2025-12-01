@@ -157,6 +157,19 @@ fi
 PYTHON_VERSION=$(python3 --version | awk '{print $2}')
 echo "? Python3 ditemukan: ${PYTHON_VERSION}"
 
+# Check Python version compatibility
+PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 8 ]); then
+    echo "❌ Error: Python 3.8 or higher is required. Current version: ${PYTHON_VERSION}"
+    echo "   Please upgrade Python to version 3.8 or higher."
+    echo "   On CentOS/RHEL, you can install Python 3.8+ using:"
+    echo "   - yum install python38 (CentOS 7)"
+    echo "   - dnf install python3 (CentOS 8+)"
+    echo "   - Or use pyenv to install a newer Python version"
+    exit 1
+fi
+
 # Check uv - install if not available
 if ! command -v uv &> /dev/null; then
     echo "? uv tidak ditemukan. Menginstall uv..."

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """SSH operations helper for remote server management."""
+from __future__ import annotations
 import subprocess
 import sys
 from typing import Optional, Tuple

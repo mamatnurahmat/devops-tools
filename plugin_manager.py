@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Plugin management system for doq CLI."""
+from __future__ import annotations
 import json
 import importlib
 from pathlib import Path

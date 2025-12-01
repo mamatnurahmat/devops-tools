@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Docker utilities plugin for doq CLI."""
+from __future__ import annotations
 import json
 import sys
 from pathlib import Path
